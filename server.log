@@ -1,0 +1,22 @@
+INFO:     Started server process [24790]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55432 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55433 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55486 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55486 - "GET /api/system/metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55487 - "GET /api/audit/logs?limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55488 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 55489) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:55488 - "GET /%40vite/client HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:55599 - "GET / HTTP/1.1" 304 Not Modified
+INFO:     connection closed
+INFO:     127.0.0.1:55599 - "GET /api/system/metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55600 - "GET /api/audit/logs?limit=8 HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 55601) - "WebSocket /ws" [accepted]
+INFO:     127.0.0.1:55602 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55603 - "GET /%40vite/client HTTP/1.1" 404 Not Found
+INFO:     connection closed

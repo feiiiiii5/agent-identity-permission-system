@@ -1,0 +1,594 @@
+import json
+import time
+import uuid
+import hashlib
+import sqlite3
+from typing import Optional
+
+
+GENESIS_HASH = "0" * 64
+
+
+class AuditLogger:
+
+    HUMAN_APPROVAL_TIMEOUT_SECONDS = 30
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._init_db()
+
+    def _get_conn(self):
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_id TEXT UNIQUE NOT NULL,
+                prev_log_hash TEXT NOT NULL,
+                log_hash TEXT NOT NULL,
+                record_content TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                action_type TEXT DEFAULT '',
+                requesting_agent TEXT DEFAULT '',
+                target_agent TEXT DEFAULT '',
+                requested_capability TEXT DEFAULT '',
+                granted_capabilities TEXT DEFAULT '[]',
+                denied_capabilities TEXT DEFAULT '[]',
+                delegated_user TEXT DEFAULT '',
+                trust_chain_snapshot TEXT DEFAULT '[]',
+                attenuation_chain TEXT DEFAULT '[]',
+                decision TEXT DEFAULT '',
+                deny_reason TEXT DEFAULT '',
+                risk_score REAL DEFAULT 0.0,
+                injection_detected INTEGER DEFAULT 0,
+                privilege_escalation_detected INTEGER DEFAULT 0,
+                session_fingerprint TEXT DEFAULT '',
+                human_approval_required INTEGER DEFAULT 0,
+                human_approval_result TEXT DEFAULT '',
+                error_code TEXT DEFAULT '',
+                trace_id TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS security_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_type TEXT NOT NULL,
+                severity TEXT DEFAULT 'medium',
+                message TEXT DEFAULT '',
+                agent_id TEXT DEFAULT '',
+                details TEXT DEFAULT '',
+                timestamp REAL NOT NULL,
+                acknowledged INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS risk_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                risk_score REAL DEFAULT 0.0,
+                action_taken TEXT DEFAULT '',
+                timestamp REAL NOT NULL,
+                details TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS human_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT UNIQUE NOT NULL,
+                requesting_agent TEXT DEFAULT '',
+                target_agent TEXT DEFAULT '',
+                requested_capability TEXT DEFAULT '',
+                session_id TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                created_at REAL NOT NULL,
+                resolved_at REAL DEFAULT 0,
+                result TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS delegation_edges (
+                source TEXT NOT NULL,
+                target TEXT NOT NULL,
+                success_count INTEGER DEFAULT 0,
+                deny_count INTEGER DEFAULT 0,
+                last_decision TEXT DEFAULT '',
+                last_timestamp REAL DEFAULT 0,
+                PRIMARY KEY (source, target)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_logs(requesting_agent);
+            CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_logs(decision);
+            CREATE INDEX IF NOT EXISTS idx_audit_trace ON audit_logs(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_alerts_ack ON security_alerts(acknowledged);
+            CREATE INDEX IF NOT EXISTS idx_risk_agent ON risk_events(agent_id);
+        """)
+        conn.commit()
+        conn.close()
+
+    def _get_last_hash(self, conn) -> str:
+        row = conn.execute(
+            "SELECT log_hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["log_hash"] if row else GENESIS_HASH
+
+    def write_log(
+        self,
+        requesting_agent: str,
+        action_type: str,
+        decision: str,
+        deny_reason: str = "",
+        error_code: str = "",
+        injection_detected: bool = False,
+        prompt_injection_flag: bool = False,
+        target_agent: str = "",
+        requested_capability: str = "",
+        granted_capabilities: list = None,
+        denied_capabilities: list = None,
+        delegated_user: str = "",
+        trust_chain_snapshot: list = None,
+        attenuation_chain: list = None,
+        risk_score: float = 0.0,
+        session_fingerprint: str = "",
+        privilege_escalation_detected: bool = False,
+        human_approval_required: bool = False,
+        human_approval_result: str = "",
+        trace_id: str = "",
+        decision_reason: str = "",
+    ) -> dict:
+        now = time.time()
+        log_id = uuid.uuid4().hex
+
+        if granted_capabilities is None:
+            granted_capabilities = []
+        if denied_capabilities is None:
+            denied_capabilities = []
+        if trust_chain_snapshot is None:
+            trust_chain_snapshot = []
+        if attenuation_chain is None:
+            attenuation_chain = []
+
+        record = {
+            "log_id": log_id,
+            "timestamp": now,
+            "action_type": action_type,
+            "requesting_agent": requesting_agent,
+            "target_agent": target_agent,
+            "requested_capability": requested_capability,
+            "granted_capabilities": granted_capabilities,
+            "denied_capabilities": denied_capabilities,
+            "delegated_user": delegated_user,
+            "trust_chain_snapshot": trust_chain_snapshot,
+            "attenuation_chain": attenuation_chain,
+            "decision": decision,
+            "deny_reason": deny_reason or decision_reason,
+            "risk_score": risk_score,
+            "injection_detected": injection_detected,
+            "privilege_escalation_detected": privilege_escalation_detected,
+            "session_fingerprint": session_fingerprint,
+            "human_approval_required": human_approval_required,
+            "human_approval_result": human_approval_result,
+            "error_code": error_code,
+            "trace_id": trace_id,
+        }
+
+        record_content = json.dumps(record, sort_keys=True, ensure_ascii=False)
+
+        conn = self._get_conn()
+        try:
+            prev_hash = self._get_last_hash(conn)
+            log_hash = hashlib.sha256(
+                (prev_hash + record_content).encode("utf-8")
+            ).hexdigest()
+
+            conn.execute(
+                """INSERT INTO audit_logs
+                (log_id, prev_log_hash, log_hash, record_content, timestamp,
+                 action_type, requesting_agent, target_agent, requested_capability,
+                 granted_capabilities, denied_capabilities, delegated_user,
+                 trust_chain_snapshot, attenuation_chain, decision, deny_reason,
+                 risk_score, injection_detected, privilege_escalation_detected,
+                 session_fingerprint, human_approval_required, human_approval_result,
+                 error_code, trace_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    log_id, prev_hash, log_hash, record_content, now,
+                    action_type, requesting_agent, target_agent, requested_capability,
+                    json.dumps(granted_capabilities), json.dumps(denied_capabilities),
+                    delegated_user, json.dumps(trust_chain_snapshot),
+                    json.dumps(attenuation_chain), decision, deny_reason or decision_reason,
+                    risk_score, int(injection_detected), int(privilege_escalation_detected),
+                    session_fingerprint, int(human_approval_required), human_approval_result,
+                    error_code, trace_id,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        return {"log_id": log_id, "log_hash": log_hash, "decision": decision}
+
+    def query_logs(
+        self,
+        requesting_agent: Optional[str] = None,
+        decision: Optional[str] = None,
+        time_range: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        trace_id: Optional[str] = None,
+    ) -> list:
+        conn = self._get_conn()
+        conditions = []
+        params = []
+
+        if requesting_agent:
+            conditions.append("requesting_agent = ?")
+            params.append(requesting_agent)
+        if decision:
+            conditions.append("decision = ?")
+            params.append(decision.upper())
+        if trace_id:
+            conditions.append("trace_id = ?")
+            params.append(trace_id)
+        if time_range:
+            now = time.time()
+            if time_range == "1h":
+                conditions.append("timestamp > ?")
+                params.append(now - 3600)
+            elif time_range == "24h":
+                conditions.append("timestamp > ?")
+                params.append(now - 86400)
+            elif time_range == "7d":
+                conditions.append("timestamp > ?")
+                params.append(now - 604800)
+
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        query = f"SELECT * FROM audit_logs{where} ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            r = dict(row)
+            for field in ["granted_capabilities", "denied_capabilities", "trust_chain_snapshot", "attenuation_chain"]:
+                try:
+                    r[field] = json.loads(r.get(field, "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    r[field] = []
+            results.append(r)
+
+        return results
+
+    def verify_integrity(self) -> dict:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, log_id, prev_log_hash, log_hash, record_content, timestamp "
+            "FROM audit_logs ORDER BY id ASC"
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return {"valid": True, "total_records": 0, "message": "No records to verify"}
+
+        prev_hash = GENESIS_HASH
+        for row in rows:
+            row = dict(row)
+            if row["prev_log_hash"] != prev_hash:
+                return {
+                    "valid": False,
+                    "error_code": "CHAIN_BROKEN",
+                    "total_records": len(rows),
+                    "broken_at_id": row["id"],
+                    "broken_at_timestamp": row["timestamp"],
+                    "message": f"Chain broken at record {row['id']}",
+                }
+            expected_hash = hashlib.sha256(
+                (prev_hash + row["record_content"]).encode("utf-8")
+            ).hexdigest()
+            if row["log_hash"] != expected_hash:
+                return {
+                    "valid": False,
+                    "error_code": "CHAIN_BROKEN",
+                    "total_records": len(rows),
+                    "broken_at_id": row["id"],
+                    "broken_at_timestamp": row["timestamp"],
+                    "message": f"Hash mismatch at record {row['id']}",
+                }
+            prev_hash = row["log_hash"]
+
+        return {"valid": True, "total_records": len(rows), "last_hash": prev_hash}
+
+    def get_all_trace_ids(self, limit: int = 50) -> list:
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT trace_id,
+                MIN(timestamp) as started_at,
+                COUNT(*) as step_count,
+                GROUP_CONCAT(DISTINCT requesting_agent) as agents,
+                MAX(CASE WHEN decision = 'DENY' THEN 1 ELSE 0 END) as has_deny
+            FROM audit_logs
+            WHERE trace_id != '' AND trace_id IS NOT NULL
+            GROUP BY trace_id
+            ORDER BY started_at DESC
+            LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            r = dict(row)
+            r["has_deny"] = bool(r.get("has_deny", 0))
+            results.append(r)
+        return results
+
+    def get_audit_by_trace(self, trace_id: str) -> dict:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM audit_logs WHERE trace_id = ? ORDER BY id ASC",
+            (trace_id,),
+        ).fetchall()
+        conn.close()
+
+        steps = []
+        for row in rows:
+            r = dict(row)
+            for field in ["granted_capabilities", "denied_capabilities"]:
+                try:
+                    r[field] = json.loads(r.get(field, "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    r[field] = []
+            steps.append(r)
+
+        return {
+            "trace_id": trace_id,
+            "step_count": len(steps),
+            "steps": steps,
+        }
+
+    def create_security_alert(
+        self,
+        alert_type: str,
+        severity: str,
+        message: str,
+        agent_id: str = "",
+        details: str = "",
+    ) -> dict:
+        now = time.time()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """INSERT INTO security_alerts
+            (alert_type, severity, message, agent_id, details, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (alert_type, severity, message, agent_id, details, now),
+        )
+        conn.commit()
+        alert_id = cursor.lastrowid
+        conn.close()
+
+        return {"alert_id": alert_id, "alert_type": alert_type, "severity": severity}
+
+    def get_security_alerts(self, limit: int = 50, unacknowledged_only: bool = False) -> list:
+        conn = self._get_conn()
+        if unacknowledged_only:
+            rows = conn.execute(
+                "SELECT * FROM security_alerts WHERE acknowledged = 0 ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM security_alerts ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_risk_events(self, agent_id: str = None, limit: int = 100) -> list:
+        conn = self._get_conn()
+        if agent_id:
+            rows = conn.execute(
+                "SELECT * FROM risk_events WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (agent_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM risk_events ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def create_risk_event(
+        self, agent_id: str, risk_score: float, action_taken: str, details: str = ""
+    ) -> dict:
+        now = time.time()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """INSERT INTO risk_events
+            (agent_id, risk_score, action_taken, timestamp, details)
+            VALUES (?, ?, ?, ?, ?)""",
+            (agent_id, risk_score, action_taken, now, details),
+        )
+        conn.commit()
+        event_id = cursor.lastrowid
+        conn.close()
+        return {"event_id": event_id, "agent_id": agent_id, "risk_score": risk_score}
+
+    def create_human_approval(
+        self,
+        task_id: str,
+        requesting_agent: str,
+        target_agent: str,
+        requested_capability: str,
+        session_id: str = "",
+    ) -> dict:
+        now = time.time()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO human_approvals
+                (task_id, requesting_agent, target_agent, requested_capability, session_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (task_id, requesting_agent, target_agent, requested_capability, session_id, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            return {"task_id": task_id, "status": "already_exists"}
+        conn.close()
+        return {
+            "task_id": task_id,
+            "status": "pending",
+            "requesting_agent": requesting_agent,
+            "target_agent": target_agent,
+            "requested_capability": requested_capability,
+        }
+
+    def get_pending_approvals(self) -> list:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM human_approvals WHERE status = 'pending' ORDER BY created_at DESC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def resolve_human_approval(self, task_id: str, approved: bool) -> dict:
+        now = time.time()
+        status = "approved" if approved else "rejected"
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE human_approvals SET status = ?, resolved_at = ?, result = ? WHERE task_id = ?",
+            (status, now, status, task_id),
+        )
+        conn.commit()
+        conn.close()
+
+        if not approved:
+            self.write_log(
+                requesting_agent="system",
+                action_type="human_approval_timeout",
+                decision="DENY",
+                deny_reason="Human approval timeout - auto rejected",
+                error_code="ERR_TIMEOUT_REJECTION",
+                human_approval_required=True,
+                human_approval_result="TIMEOUT_REJECTION",
+            )
+
+        return {"task_id": task_id, "status": status, "resolved_at": now}
+
+    def check_and_timeout_approvals(self) -> list:
+        conn = self._get_conn()
+        now = time.time()
+        timeout = self.HUMAN_APPROVAL_TIMEOUT_SECONDS
+        rows = conn.execute(
+            "SELECT * FROM human_approvals WHERE status = 'pending' AND created_at < ?",
+            (now - timeout,),
+        ).fetchall()
+
+        timed_out = []
+        for row in rows:
+            r = dict(row)
+            conn.execute(
+                "UPDATE human_approvals SET status = 'timeout_rejected', resolved_at = ?, result = 'TIMEOUT_REJECTION' WHERE task_id = ?",
+                (now, r["task_id"]),
+            )
+            self.write_log(
+                requesting_agent=r.get("requesting_agent", "system"),
+                action_type="human_approval_timeout",
+                decision="DENY",
+                deny_reason=f"Human approval timed out after {timeout}s for task {r['task_id']}",
+                error_code="ERR_TIMEOUT_REJECTION",
+                human_approval_required=True,
+                human_approval_result="TIMEOUT_REJECTION",
+            )
+            timed_out.append(r["task_id"])
+
+        conn.commit()
+        conn.close()
+        return timed_out
+
+    def update_delegation_edge(
+        self, source: str, target: str, decision: str
+    ):
+        conn = self._get_conn()
+        now = time.time()
+        row = conn.execute(
+            "SELECT * FROM delegation_edges WHERE source = ? AND target = ?",
+            (source, target),
+        ).fetchone()
+
+        if row:
+            if decision == "ALLOW":
+                conn.execute(
+                    "UPDATE delegation_edges SET success_count = success_count + 1, last_decision = ?, last_timestamp = ? WHERE source = ? AND target = ?",
+                    (decision, now, source, target),
+                )
+            else:
+                conn.execute(
+                    "UPDATE delegation_edges SET deny_count = deny_count + 1, last_decision = ?, last_timestamp = ? WHERE source = ? AND target = ?",
+                    (decision, now, source, target),
+                )
+        else:
+            success = 1 if decision == "ALLOW" else 0
+            deny = 0 if decision == "ALLOW" else 1
+            conn.execute(
+                "INSERT INTO delegation_edges (source, target, success_count, deny_count, last_decision, last_timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (source, target, success, deny, decision, now),
+            )
+        conn.commit()
+        conn.close()
+
+    def get_system_metrics(self) -> dict:
+        conn = self._get_conn()
+
+        agent_count = conn.execute("SELECT COUNT(*) as cnt FROM agents").fetchone()["cnt"]
+        active_tokens = conn.execute(
+            "SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ?",
+            (time.time(),),
+        ).fetchone()["cnt"]
+        revoked_tokens = conn.execute(
+            "SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 1"
+        ).fetchone()["cnt"]
+        total_logs = conn.execute("SELECT COUNT(*) as cnt FROM audit_logs").fetchone()["cnt"]
+        allow_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM audit_logs WHERE decision = 'ALLOW'"
+        ).fetchone()["cnt"]
+        deny_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM audit_logs WHERE decision = 'DENY'"
+        ).fetchone()["cnt"]
+        alert_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM audit_logs WHERE decision = 'ALERT'"
+        ).fetchone()["cnt"]
+        injection_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM audit_logs WHERE injection_detected = 1"
+        ).fetchone()["cnt"]
+        unack_alerts = conn.execute(
+            "SELECT COUNT(*) as cnt FROM security_alerts WHERE acknowledged = 0"
+        ).fetchone()["cnt"]
+
+        conn.close()
+
+        return {
+            "agents": {"total": agent_count},
+            "tokens": {
+                "active": active_tokens,
+                "revoked": revoked_tokens,
+                "total": active_tokens + revoked_tokens,
+            },
+            "audit": {
+                "total_logs": total_logs,
+                "allow_count": allow_count,
+                "deny_count": deny_count,
+                "alert_count": alert_count,
+                "injection_count": injection_count,
+            },
+            "security": {
+                "unacknowledged_alerts": unack_alerts,
+            },
+        }

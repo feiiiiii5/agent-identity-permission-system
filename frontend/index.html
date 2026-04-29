@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentPass - AI Agent Identity & Access Management</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap');
+:root {
+  --bg-void: #050810; --bg-base: #0a0f1e; --bg-surface: #0f1629; --bg-elevated: #151d35;
+  --bg-glass: rgba(15,22,41,0.75); --border-subtle: rgba(56,189,248,0.08);
+  --border-default: rgba(56,189,248,0.15); --border-strong: rgba(56,189,248,0.3);
+  --text-bright: #f0f4ff; --text-primary: #c8d6f0; --text-secondary: #7b8db5;
+  --text-muted: #4a5a80; --neon-blue: #38bdf8; --neon-cyan: #22d3ee;
+  --neon-green: #34d399; --neon-red: #f87171; --neon-amber: #fbbf24;
+  --neon-purple: #a78bfa; --neon-pink: #f472b6;
+  --glow-blue: 0 0 20px rgba(56,189,248,0.3); --glow-green: 0 0 20px rgba(52,211,153,0.3);
+  --glow-red: 0 0 20px rgba(248,113,113,0.3); --glow-amber: 0 0 20px rgba(251,191,36,0.3);
+  --radius: 10px; --radius-lg: 16px;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-sans: 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg-void); color: var(--text-primary); min-height: 100vh; overflow-x: hidden; }
+::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+.demo-banner { background: linear-gradient(90deg, #f59e0b, #d97706); color: #000; text-align: center; padding: 6px 0; font-weight: 600; font-size: 13px; letter-spacing: 0.5px; }
+.status-bar { background: var(--bg-surface); border-bottom: 1px solid var(--border-default); padding: 10px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.status-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.status-dot.green { background: var(--neon-green); box-shadow: var(--glow-green); }
+.status-dot.red { background: var(--neon-red); box-shadow: var(--glow-red); }
+.status-dot.amber { background: var(--neon-amber); box-shadow: var(--glow-amber); }
+.status-value { color: var(--text-bright); font-family: var(--font-mono); font-weight: 600; }
+.main-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto auto auto; gap: 16px; padding: 16px 24px; max-width: 1600px; margin: 0 auto; }
+.panel { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: hidden; }
+.panel-header { padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--text-bright); }
+.panel-header .icon { width: 18px; height: 18px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; }
+.panel-body { padding: 16px; }
+.canvas-panel { grid-column: 1 / -1; }
+.canvas-panel canvas { width: 100%; height: 280px; display: block; border-radius: 8px; }
+.token-panel .panel-body { max-height: 400px; overflow-y: auto; }
+.json-view { font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.json-key { color: var(--neon-cyan); } .json-string { color: var(--neon-green); }
+.json-number { color: var(--neon-amber); } .json-bool { color: var(--neon-purple); }
+.json-null { color: var(--text-muted); } .json-bracket { color: var(--text-secondary); }
+.audit-panel { grid-column: 1 / -1; }
+.audit-flow { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.audit-entry { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border-radius: 8px; font-size: 12px; cursor: pointer; transition: background 0.2s; border-left: 3px solid transparent; }
+.audit-entry:hover { background: var(--bg-elevated); }
+.audit-entry.allow { border-left-color: var(--neon-green); } .audit-entry.deny { border-left-color: var(--neon-red); }
+.audit-entry.alert { border-left-color: var(--neon-amber); }
+.audit-time { color: var(--text-muted); font-family: var(--font-mono); min-width: 65px; }
+.audit-agent { color: var(--neon-blue); min-width: 100px; }
+.audit-action { color: var(--text-primary); flex: 1; }
+.audit-decision { font-weight: 600; min-width: 50px; text-transform: uppercase; font-size: 11px; }
+.audit-decision.allow { color: var(--neon-green); } .audit-decision.deny { color: var(--neon-red); }
+.audit-decision.alert { color: var(--neon-amber); }
+.audit-detail { display: none; padding: 8px 12px; margin-top: 4px; background: var(--bg-elevated); border-radius: 6px; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
+.audit-entry.expanded .audit-detail { display: block; }
+.demo-panel { grid-column: 1 / -1; }
+.demo-buttons { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 16px; }
+.demo-btn { padding: 10px 8px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-elevated); color: var(--text-primary); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.2s; text-align: center; font-family: var(--font-sans); }
+.demo-btn:hover { border-color: var(--neon-blue); box-shadow: var(--glow-blue); color: var(--text-bright); }
+.demo-btn:active { transform: scale(0.97); }
+.demo-btn.active { border-color: var(--neon-cyan); background: rgba(34,211,238,0.1); color: var(--neon-cyan); }
+.demo-steps { display: flex; flex-direction: column; gap: 8px; }
+.demo-step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; background: var(--bg-elevated); border-radius: 8px; border-left: 3px solid var(--border-default); animation: stepIn 0.3s ease; }
+.demo-step.success { border-left-color: var(--neon-green); } .demo-step.error { border-left-color: var(--neon-red); }
+.demo-step.warning { border-left-color: var(--neon-amber); } .demo-step.info { border-left-color: var(--neon-blue); }
+.demo-step-num { background: var(--bg-surface); color: var(--neon-cyan); width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; font-family: var(--font-mono); }
+.demo-step-text { font-size: 13px; color: var(--text-primary); }
+.demo-step-detail { font-size: 11px; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono); }
+.approval-modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(5,8,16,0.85); z-index: 1000; align-items: center; justify-content: center; }
+.approval-modal.show { display: flex; }
+.approval-card { background: var(--bg-surface); border: 2px solid var(--neon-amber); border-radius: var(--radius-lg); padding: 24px; max-width: 420px; width: 90%; box-shadow: 0 0 40px rgba(251,191,36,0.2); }
+.approval-card h3 { color: var(--neon-amber); margin-bottom: 12px; }
+.approval-timer { font-family: var(--font-mono); font-size: 28px; color: var(--neon-red); text-align: center; margin: 12px 0; }
+.approval-btns { display: flex; gap: 12px; margin-top: 16px; }
+.approval-btns button { flex: 1; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; font-family: var(--font-sans); }
+.approval-btns .approve { background: var(--neon-green); color: #000; }
+.approval-btns .reject { background: var(--neon-red); color: #fff; }
+.toast-container { position: fixed; top: 60px; right: 24px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
+.toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; animation: toastIn 0.3s ease; max-width: 360px; }
+.toast.info { background: rgba(56,189,248,0.15); border: 1px solid var(--neon-blue); color: var(--neon-blue); }
+.toast.success { background: rgba(52,211,153,0.15); border: 1px solid var(--neon-green); color: var(--neon-green); }
+.toast.error { background: rgba(248,113,113,0.15); border: 1px solid var(--neon-red); color: var(--neon-red); }
+.toast.warning { background: rgba(251,191,36,0.15); border: 1px solid var(--neon-amber); color: var(--neon-amber); }
+@keyframes stepIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+.pulse { animation: pulse 2s infinite; }
+@media (max-width: 900px) {
+  .main-grid { grid-template-columns: 1fr; padding: 12px; }
+  .canvas-panel, .audit-panel, .demo-panel { grid-column: 1; }
+  .demo-buttons { grid-template-columns: repeat(3, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div id="demoBanner" class="demo-banner" style="display:none;">⚠️ 当前为 Demo 模式 — 飞书 API 返回模拟数据</div>
+
+<div class="status-bar" id="statusBar">
+  <div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--neon-cyan);font-size:15px;">
+    <span style="font-size:18px;">🛡️</span> AgentPass
+  </div>
+  <div class="status-item"><span class="status-dot green" id="healthDot"></span> 系统 <span class="status-value" id="healthStatus">--</span></div>
+  <div class="status-item">活跃Token <span class="status-value" id="activeTokens">0</span></div>
+  <div class="status-item">今日拦截 <span class="status-value" style="color:var(--neon-red)" id="denyCount">0</span></div>
+  <div class="status-item"><span class="status-dot" id="chainDot"></span> 审计链 <span class="status-value" id="chainStatus">--</span></div>
+  <div class="status-item"><span class="status-dot" id="wsDot"></span> <span id="wsStatus">WebSocket 连接中...</span></div>
+</div>
+
+<div class="main-grid">
+
+  <div class="panel canvas-panel">
+    <div class="panel-header"><span class="icon" style="background:var(--neon-blue);color:#000;">◈</span> 调用链可视化</div>
+    <div class="panel-body" style="padding:8px;">
+      <canvas id="graphCanvas" width="1200" height="280"></canvas>
+    </div>
+  </div>
+
+  <div class="panel token-panel">
+    <div class="panel-header"><span class="icon" style="background:var(--neon-green);color:#000;">◉</span> Token 检视面板</div>
+    <div class="panel-body" id="tokenPanel">
+      <div style="color:var(--text-muted);text-align:center;padding:40px 0;font-size:13px;">等待 Token 签发...</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><span class="icon" style="background:var(--neon-purple);color:#000;">◎</span> Agent 风险概览</div>
+    <div class="panel-body" id="agentPanel" style="max-height:400px;overflow-y:auto;">
+      <div style="color:var(--text-muted);text-align:center;padding:20px;font-size:13px;">加载中...</div>
+    </div>
+  </div>
+
+  <div class="panel audit-panel">
+    <div class="panel-header"><span class="icon" style="background:var(--neon-amber);color:#000;">▤</span> 实时审计日志流</div>
+    <div class="panel-body">
+      <div class="audit-flow" id="auditFlow">
+        <div style="color:var(--text-muted);text-align:center;padding:20px;font-size:13px;">等待审计事件...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel demo-panel">
+    <div class="panel-header"><span class="icon" style="background:var(--neon-cyan);color:#000;">▶</span> 演示控制台</div>
+    <div class="panel-body">
+      <div class="demo-buttons">
+        <button class="demo-btn" onclick="runDemo('normal-delegation')">正常委托流程</button>
+        <button class="demo-btn" onclick="runDemo('capability-mismatch')">越权拦截流程</button>
+        <button class="demo-btn" onclick="runDemo('token-theft')">Token盗用检测</button>
+        <button class="demo-btn" onclick="runDemo('injection-defense')">Prompt Injection防御</button>
+        <button class="demo-btn" onclick="runDemo('human-approval')">人工审批流程</button>
+        <button class="demo-btn" onclick="runDemo('privilege-escalation')">特权升级防御</button>
+      </div>
+      <div class="demo-steps" id="demoSteps"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="approval-modal" id="approvalModal">
+  <div class="approval-card">
+    <h3>⚠️ 人工审批请求</h3>
+    <div id="approvalInfo" style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;"></div>
+    <div class="approval-timer" id="approvalTimer">30</div>
+    <div style="text-align:center;font-size:12px;color:var(--text-muted);margin-bottom:8px;">秒后自动拒绝</div>
+    <div class="approval-btns">
+      <button class="approve" onclick="resolveApproval(true)">批准</button>
+      <button class="reject" onclick="resolveApproval(false)">拒绝</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+const API = window.location.origin;
+let ws = null;
+let wsReconnectTimer = null;
+let agentsCache = [];
+let graphData = { nodes: [], edges: [] };
+let currentApprovalTaskId = null;
+let approvalTimerInterval = null;
+let approvalCountdown = 30;
+
+function connectWS() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  try { ws = new WebSocket(proto + '://' + location.host + '/ws'); } catch(e) { wsReconnectTimer = setTimeout(connectWS, 5000); return; }
+  ws.onopen = () => { document.getElementById('wsDot').classList.add('green'); document.getElementById('wsStatus').textContent = '已连接'; };
+  ws.onclose = () => { document.getElementById('wsDot').classList.remove('green'); document.getElementById('wsDot').classList.add('red'); document.getElementById('wsStatus').textContent = '已断开'; ws = null; wsReconnectTimer = setTimeout(connectWS, 3000); };
+  ws.onerror = () => { ws.close(); };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'pong') return;
+      if (msg.type === 'demo_step') handleDemoStep(msg.data);
+      if (msg.type === 'human_approval_required') showApprovalModal(msg.data);
+      if (msg.type === 'token_issued' || msg.type === 'delegation_success') { refreshMetrics(); refreshAudit(); refreshGraph(); }
+      if (msg.type === 'delegation_denied' || msg.type === 'privilege_escalation' || msg.type === 'injection_detected') { refreshMetrics(); refreshAudit(); toast('安全事件: ' + msg.type, 'error'); }
+    } catch(err) {}
+  };
+}
+
+function toast(msg, type='info') {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 4000);
+}
+
+async function fetchJSON(url, opts) {
+  try {
+    const resp = await fetch(API + url, opts);
+    return await resp.json();
+  } catch(e) { console.error(e); return null; }
+}
+
+async function refreshMetrics() {
+  const m = await fetchJSON('/api/system/metrics');
+  if (!m) return;
+  document.getElementById('healthStatus').textContent = '正常';
+  document.getElementById('healthDot').classList.add('green');
+  document.getElementById('activeTokens').textContent = m.tokens?.active || 0;
+  document.getElementById('denyCount').textContent = m.audit?.deny_count || 0;
+  const chainValid = m.audit_chain?.valid;
+  document.getElementById('chainStatus').textContent = chainValid ? '完整' : '断裂';
+  document.getElementById('chainDot').className = 'status-dot ' + (chainValid ? 'green' : 'red');
+  if (m.demo_mode) document.getElementById('demoBanner').style.display = 'block';
+}
+
+async function refreshAgents() {
+  const agents = await fetchJSON('/api/agents');
+  if (!agents) return;
+  agentsCache = agents;
+  const panel = document.getElementById('agentPanel');
+  panel.innerHTML = agents.map(a => {
+    const risk = a.risk_score || 0;
+    const riskColor = risk >= 70 ? 'var(--neon-red)' : risk >= 40 ? 'var(--neon-amber)' : 'var(--neon-green)';
+    const card = a.agent_card || {};
+    return `<div style="background:var(--bg-elevated);border-radius:8px;padding:12px;margin-bottom:8px;border-left:3px solid ${riskColor}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-weight:600;color:var(--text-bright)">${a.agent_name}</span>
+        <span style="font-family:var(--font-mono);font-size:12px;color:${riskColor}">Risk: ${risk.toFixed(1)}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px">ID: ${a.agent_id} | Type: ${a.agent_type}</div>
+      <div style="font-size:11px;color:var(--text-muted)">Trust: ${a.trust_score} | Trust Level: ${card.trust_level || '--'}</div>
+      <div style="font-size:11px;color:var(--neon-cyan);margin-top:4px">${(a.capabilities||[]).join(', ')}</div>
+    </div>`;
+  }).join('');
+}
+
+async function refreshAudit() {
+  const logs = await fetchJSON('/api/audit/logs?limit=30');
+  if (!logs) return;
+  const flow = document.getElementById('auditFlow');
+  flow.innerHTML = logs.map(l => {
+    const cls = (l.decision||'').toLowerCase();
+    const t = new Date(l.timestamp * 1000);
+    const time = t.toLocaleTimeString('zh-CN', {hour12:false});
+    return `<div class="audit-entry ${cls}" onclick="this.classList.toggle('expanded')">
+      <span class="audit-time">${time}</span>
+      <span class="audit-agent">${l.requesting_agent}</span>
+      <span class="audit-action">${l.action_type}${l.target_agent ? ' → ' + l.target_agent : ''}</span>
+      <span class="audit-decision ${cls}">${l.decision}</span>
+      <div class="audit-detail">
+        <div>log_id: ${l.log_id}</div>
+        <div>prev_hash: ${l.prev_log_hash?.substring(0,16)}...</div>
+        <div>curr_hash: ${l.log_hash?.substring(0,16)}...</div>
+        ${l.deny_reason ? '<div style="color:var(--neon-red)">reason: '+l.deny_reason+'</div>' : ''}
+        ${l.error_code ? '<div style="color:var(--neon-amber)">error: '+l.error_code+'</div>' : ''}
+        ${l.risk_score ? '<div>risk_score: '+l.risk_score+'</div>' : ''}
+        ${l.injection_detected ? '<div style="color:var(--neon-red)">⚠ INJECTION DETECTED</div>' : ''}
+        ${l.privilege_escalation_detected ? '<div style="color:var(--neon-red)">⚠ PRIVILEGE ESCALATION</div>' : ''}
+        ${l.trace_id ? '<div>trace: '+l.trace_id+'</div>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function refreshGraph() {
+  const g = await fetchJSON('/api/delegation/graph');
+  if (!g) return;
+  graphData = g;
+  drawGraph();
+}
+
+function drawGraph() {
+  const canvas = document.getElementById('graphCanvas');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  ctx.fillStyle = '#0a0f1e';
+  ctx.fillRect(0, 0, W, H);
+
+  const gridColor = 'rgba(56,189,248,0.04)';
+  ctx.strokeStyle = gridColor;
+  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  const nodes = graphData.nodes || [];
+  if (nodes.length === 0) {
+    ctx.fillStyle = '#4a5a80';
+    ctx.font = '14px "Noto Sans SC"';
+    ctx.textAlign = 'center';
+    ctx.fillText('等待调用链数据...', W/2, H/2);
+    return;
+  }
+
+  const nodePositions = {};
+  const colors = { 'agent_doc_001': '#38bdf8', 'agent_data_001': '#34d399', 'agent_search_001': '#a78bfa' };
+  const cx = W / 2, cy = H / 2;
+  const radius = Math.min(W, H) * 0.3;
+
+  nodes.forEach((n, i) => {
+    const angle = (2 * Math.PI * i / nodes.length) - Math.PI / 2;
+    nodePositions[n.id] = { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle), ...n };
+  });
+
+  const edges = graphData.edges || [];
+  edges.forEach(e => {
+    const from = nodePositions[e.source];
+    const to = nodePositions[e.target];
+    if (!from || !to) return;
+    const color = e.last_decision === 'ALLOW' ? '#34d399' : e.last_decision === 'DENY' ? '#f87171' : '#7b8db5';
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const nx = dx/dist, ny = dy/dist;
+    const startX = from.x + nx*35, startY = from.y + ny*35;
+    const endX = to.x - nx*35, endY = to.y - ny*35;
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+
+    const arrowLen = 10;
+    const arrowAngle = Math.atan2(dy, dx);
+    ctx.beginPath();
+    ctx.fillStyle = color;
+    ctx.moveTo(endX, endY);
+    ctx.lineTo(endX - arrowLen * Math.cos(arrowAngle - 0.3), endY - arrowLen * Math.sin(arrowAngle - 0.3));
+    ctx.lineTo(endX - arrowLen * Math.cos(arrowAngle + 0.3), endY - arrowLen * Math.sin(arrowAngle + 0.3));
+    ctx.closePath();
+    ctx.fill();
+
+    const midX = (startX + endX) / 2, midY = (startY + endY) / 2;
+    ctx.fillStyle = color;
+    ctx.font = '10px "JetBrains Mono"';
+    ctx.textAlign = 'center';
+    ctx.fillText(`✓${e.success_count} ✗${e.deny_count}`, midX, midY - 6);
+  });
+
+  nodes.forEach(n => {
+    const p = nodePositions[n.id];
+    const color = colors[n.id] || '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 30, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(15,22,41,0.9)';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 15;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 30, 0, 2 * Math.PI);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = color;
+    ctx.font = 'bold 11px "Noto Sans SC"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n.name?.substring(0, 6) || n.id.substring(6, 12), p.x, p.y - 4);
+    ctx.fillStyle = '#7b8db5';
+    ctx.font = '9px "JetBrains Mono"';
+    ctx.fillText('T:' + (n.trust_score||0).toFixed(0), p.x, p.y + 10);
+  });
+}
+
+function renderTokenJSON(data) {
+  const panel = document.getElementById('tokenPanel');
+  if (!data) { panel.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:40px;font-size:13px">等待 Token 签发...</div>'; return; }
+  const json = JSON.stringify(data, null, 2);
+  const highlighted = json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
+    let cls = 'json-number';
+    if (/^"/.test(match)) { cls = /:$/.test(match) ? 'json-key' : 'json-string'; }
+    else if (/true|false/.test(match)) cls = 'json-bool';
+    else if (/null/.test(match)) cls = 'json-null';
+    return `<span class="${cls}">${match}</span>`;
+  });
+  panel.innerHTML = `<div class="json-view">${highlighted}</div>`;
+}
+
+async function runDemo(scenario) {
+  document.querySelectorAll('.demo-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('demoSteps').innerHTML = '';
+  const result = await fetchJSON(`/api/demo/${scenario}`, { method: 'POST' });
+  if (result && result.steps) {
+    result.steps.forEach(s => handleDemoStep(s));
+  }
+  refreshMetrics();
+  refreshAudit();
+  refreshGraph();
+  refreshAgents();
+}
+
+function handleDemoStep(step) {
+  const container = document.getElementById('demoSteps');
+  const cls = step.action.includes('error') || step.action.includes('denied') || step.action.includes('blocked') || step.action.includes('failed') || step.action.includes('revoked') || step.action.includes('escalation') ? 'error' :
+               step.action.includes('approval') || step.action.includes('warning') ? 'warning' : 'success';
+  const div = document.createElement('div');
+  div.className = `demo-step ${cls}`;
+  let detail = '';
+  if (step.token) { detail = `<div class="demo-step-detail">jti: ${step.token.jti} | scope: ${(step.token.scope||[]).join(', ')}</div>`; renderTokenJSON(step.token); }
+  if (step.delegation) { detail += `<div class="demo-step-detail">delegated_caps: ${(step.delegation.delegated_capabilities||[]).join(', ')} | attenuation: ${step.delegation.attenuation}</div>`; }
+  if (step.error) { detail += `<div class="demo-step-detail" style="color:var(--neon-red)">${step.error}</div>`; }
+  if (step.error_code) { detail += `<div class="demo-step-detail" style="color:var(--neon-amber)">Error: ${step.error_code}</div>`; }
+  if (step.scan_result) { detail += `<div class="demo-step-detail">threats: ${step.scan_result.threat_count} | confidence: ${step.scan_result.confidence}</div>`; }
+  if (step.risk_score !== undefined) { detail += `<div class="demo-step-detail">risk_score: ${step.risk_score}</div>`; }
+  div.innerHTML = `<div class="demo-step-num">${step.step}</div><div><div class="demo-step-text">${step.description}</div>${detail}</div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function showApprovalModal(data) {
+  currentApprovalTaskId = data.task_id;
+  approvalCountdown = 30;
+  document.getElementById('approvalInfo').textContent = `Agent: ${data.requesting_agent} → ${data.target_agent} | Capability: ${data.requested_capability}`;
+  document.getElementById('approvalTimer').textContent = approvalCountdown;
+  document.getElementById('approvalModal').classList.add('show');
+  if (approvalTimerInterval) clearInterval(approvalTimerInterval);
+  approvalTimerInterval = setInterval(() => {
+    approvalCountdown--;
+    document.getElementById('approvalTimer').textContent = approvalCountdown;
+    if (approvalCountdown <= 0) { clearInterval(approvalTimerInterval); resolveApproval(false); }
+  }, 1000);
+}
+
+async function resolveApproval(approved) {
+  if (approvalTimerInterval) clearInterval(approvalTimerInterval);
+  document.getElementById('approvalModal').classList.remove('show');
+  if (currentApprovalTaskId) {
+    await fetchJSON(`/api/approvals/${currentApprovalTaskId}/resolve`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ approved })
+    });
+    toast(approved ? '审批已通过' : '审批已拒绝', approved ? 'success' : 'warning');
+    currentApprovalTaskId = null;
+  }
+  refreshAudit();
+  refreshMetrics();
+}
+
+async function init() {
+  connectWS();
+  await refreshMetrics();
+  await refreshAgents();
+  await refreshAudit();
+  await refreshGraph();
+  const ds = await fetchJSON('/api/demo-status');
+  if (ds && ds.is_demo_mode) document.getElementById('demoBanner').style.display = 'block';
+  setInterval(refreshMetrics, 5000);
+  setInterval(refreshAudit, 3000);
+  window.addEventListener('resize', drawGraph);
+}
+
+init();
+</script>
+</body>
+</html>
