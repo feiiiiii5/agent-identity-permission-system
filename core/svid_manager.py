@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 import re
@@ -41,17 +42,54 @@ class AttestationResult:
 
 class SVIDManager:
 
-    def __init__(self, trust_domain: str = "agentpass.local"):
+    def __init__(self, trust_domain: str = "agentpass.local", key_dir: str = None):
         self.trust_domain = trust_domain
         self._svids = {}
-        self._ca_key = rsa.generate_private_key(
+        if key_dir is None:
+            key_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "keys")
+        self.key_dir = key_dir
+        os.makedirs(key_dir, exist_ok=True)
+        self._ca_key, self._ca_cert = self._load_or_generate_ca()
+
+    def _load_or_generate_ca(self):
+        ca_key_path = os.path.join(self.key_dir, "svid_ca_private.pem")
+        ca_cert_path = os.path.join(self.key_dir, "svid_ca_cert.pem")
+        if os.path.exists(ca_key_path) and os.path.exists(ca_cert_path):
+            try:
+                with open(ca_key_path, "rb") as f:
+                    ca_key = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
+                with open(ca_cert_path, "rb") as f:
+                    ca_cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+                now = datetime.now(timezone.utc)
+                if ca_cert.not_valid_after_utc > now:
+                    return ca_key, ca_cert
+            except Exception:
+                pass
+        ca_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
             backend=default_backend(),
         )
-        self._ca_cert = self._generate_ca_cert()
+        ca_cert = self._generate_ca_cert_with_key(ca_key)
+        try:
+            key_pem = ca_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM)
+            with open(ca_key_path, "wb") as f:
+                f.write(key_pem)
+            with open(ca_cert_path, "wb") as f:
+                f.write(cert_pem)
+        except Exception:
+            pass
+        return ca_key, ca_cert
 
     def _generate_ca_cert(self):
+        return self._generate_ca_cert_with_key(self._ca_key)
+
+    def _generate_ca_cert_with_key(self, ca_key):
         subject = issuer = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, f"AgentPass CA - {self.trust_domain}"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "AgentPass"),
@@ -60,7 +98,7 @@ class SVIDManager:
             x509.CertificateBuilder()
             .subject_name(subject)
             .issuer_name(issuer)
-            .public_key(self._ca_key.public_key())
+            .public_key(ca_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(
                 datetime.now(timezone.utc)
@@ -74,7 +112,7 @@ class SVIDManager:
                 x509.BasicConstraints(ca=True, path_length=None),
                 critical=True,
             )
-            .sign(self._ca_key, hashes.SHA256(), default_backend())
+            .sign(ca_key, hashes.SHA256(), default_backend())
         )
 
     def issue_svid(self, agent_id: str, agent_type: str, ttl_seconds: int = 3600) -> SVID:
@@ -170,7 +208,8 @@ class SVIDManager:
         old = self._svids.get(agent_id)
         agent_type = ""
         if old:
-            agent_type = "rotated"
+            parts = old.spiffe_id.split("/")
+            agent_type = parts[-1] if parts else old.agent_id
         new_svid = self.issue_svid(agent_id, agent_type)
         return new_svid
 

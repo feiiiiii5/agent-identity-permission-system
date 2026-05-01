@@ -12,11 +12,11 @@ class TestPolicyEngine:
     def setup_method(self):
         self.engine = PolicyEngine("policies/")
 
-    def test_default_allow_no_policies(self):
+    def test_default_deny_no_policies(self):
         engine = PolicyEngine("/nonexistent_dir/")
         result = engine.evaluate("agent_test", "lark:doc:read", "feishu_internal")
-        assert result.allowed is True
-        assert result.matched_policy == "default_allow"
+        assert result.allowed is False
+        assert result.matched_policy == "default_deny"
 
     def test_policy_engine_deny_override_allow(self):
         result = self.engine.evaluate(

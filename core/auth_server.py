@@ -21,6 +21,7 @@ from core.dpop_verifier import DPoPVerifier
 from core.rate_limiter import SlidingWindowRateLimiter
 from core.circuit_breaker import CircuitBreaker
 from core.nonce_manager import NonceManager
+from core.incident_responder import IncidentResponder
 
 
 class AuthServer:
@@ -48,6 +49,7 @@ class AuthServer:
         self.rate_limiter = SlidingWindowRateLimiter(db_path)
         self.circuit_breaker = CircuitBreaker()
         self.nonce_manager = NonceManager(db_path)
+        self.incident_responder = IncidentResponder(db_path)
 
         self._ws_notify = None
         self._agent_key_pairs = {}
@@ -313,6 +315,7 @@ class AuthServer:
         task_id: str = None,
         trace_id: str = None,
         task_description: str = None,
+        nonce: str = None,
     ) -> dict:
         rl_result = self.rate_limiter.check_rate_limit(agent_id, "token_issue")
         if not rl_result.allowed:
@@ -364,6 +367,30 @@ class AuthServer:
 
         if agent["status"] != "active":
             raise PermissionError(f"Agent {agent_id} is not active [ERR_AGENT_INACTIVE]")
+
+        if nonce:
+            nonce_result = self.nonce_manager.consume_nonce(nonce, agent_id)
+            if not nonce_result.valid:
+                self.audit_logger.write_log(
+                    requesting_agent=agent_id,
+                    action_type="token_issue",
+                    decision="DENY",
+                    deny_reason=f"Nonce invalid: {nonce_result.error_code}",
+                    error_code=nonce_result.error_code,
+                    trace_id=trace_id,
+                )
+                raise PermissionError(f"Nonce verification failed: {nonce_result.error_code} [{nonce_result.error_code}]")
+
+        svid = self.svid_manager.get_svid(agent_id)
+        if svid and svid.expires_at < time.time():
+            self.audit_logger.write_log(
+                requesting_agent=agent_id,
+                action_type="svid_expired",
+                decision="ALERT",
+                deny_reason="SVID expired, auto-rotating",
+                trace_id=trace_id,
+            )
+            self.svid_manager.rotate_svid(agent_id)
 
         registered_caps = agent["capabilities"]
 
@@ -424,6 +451,46 @@ class AuthServer:
                 f"Privilege escalation detected. All active tokens for {agent_id} have been revoked. "
                 f"[ERR_PRIVILEGE_ESCALATION]"
             )
+
+        policy_context = {
+            "hour": time.localtime().tm_hour,
+            "risk_score": 0,
+            "delegated_user": delegated_user or "",
+            "agent_capabilities": registered_caps,
+            "circuit_breaker_open": not self.circuit_breaker.can_proceed(agent_id)["allowed"],
+        }
+        for cap in granted_caps:
+            policy_decision = self.policy_engine.evaluate(
+                subject_id=agent_id,
+                action=cap,
+                resource=cap,
+                context=policy_context,
+            )
+            if not policy_decision.allowed:
+                granted_caps = [c for c in granted_caps if c != cap]
+                denied_caps.append(cap)
+                self.audit_logger.write_policy_decision(
+                    subject_id=agent_id,
+                    action=cap,
+                    resource=cap,
+                    matched_policy=policy_decision.matched_policy,
+                    effect="deny",
+                    reason=policy_decision.reason,
+                    evaluation_trace=policy_decision.evaluation_trace,
+                    context=policy_context,
+                )
+
+        if not granted_caps:
+            self.audit_logger.write_log(
+                requesting_agent=agent_id,
+                action_type="token_issue",
+                decision="DENY",
+                deny_reason="All capabilities denied by policy engine",
+                denied_capabilities=denied_caps,
+                error_code="ERR_POLICY_DENIED",
+                trace_id=trace_id,
+            )
+            raise PermissionError("All requested capabilities denied by policy [ERR_POLICY_DENIED]")
 
         risk = self.risk_scorer.compute_risk_score(agent_id, granted_caps)
         risk_score = risk["risk_score"]
@@ -500,6 +567,11 @@ class AuthServer:
             jti=jti,
         )
 
+        self.dpop_verifier.bind_token_to_key(
+            jti,
+            hashlib.sha256(agent.get("encryption_public_key", "").encode()).hexdigest()[:32]
+        )
+
         self.audit_logger.write_log(
             requesting_agent=agent_id,
             action_type="token_issue",
@@ -515,7 +587,7 @@ class AuthServer:
         )
 
         self.behavior_analyzer.record_observation(
-            agent_id, granted_caps, delegation_depth=0
+            agent_id, granted_caps, delegation_depth=0, action_type="token_issue"
         )
 
         self._notify("token_issued", {
@@ -807,6 +879,7 @@ class AuthServer:
         verifier_agent_id: str,
         verifier_secret: str,
         required_capability: str = None,
+        dpop_proof: str = None,
     ) -> dict:
         verifier = self._get_agent(verifier_agent_id)
         if not verifier:
@@ -816,14 +889,25 @@ class AuthServer:
 
         verify_result = self.token_manager.verify_token(token)
         if not verify_result["valid"]:
+            error = verify_result.get("error", "Token invalid")
+            if error in ("TOKEN_EXPIRED",):
+                error_code = "ERR_TOKEN_EXPIRED"
+            elif error == "TOKEN_REVOKED":
+                error_code = "ERR_TOKEN_REVOKED"
+            elif error == "TOKEN_MAX_USES_EXCEEDED":
+                error_code = "ERR_TOKEN_MAX_USES"
+            elif error == "TOKEN_NOT_FOUND":
+                error_code = "ERR_IDENTITY_UNVERIFIABLE"
+            else:
+                error_code = "ERR_IDENTITY_UNVERIFIABLE"
             self.audit_logger.write_log(
                 requesting_agent=verifier_agent_id,
                 action_type="token_verify",
                 decision="DENY",
-                deny_reason=verify_result.get("error", "Token invalid"),
-                error_code="ERR_TOKEN_INVALID",
+                deny_reason=error,
+                error_code=error_code,
             )
-            raise PermissionError(f"Token invalid: {verify_result.get('error', '')} [ERR_TOKEN_INVALID]")
+            raise PermissionError(f"Token invalid: {error} [{error_code}]")
 
         payload = verify_result["payload"]
         token_caps = payload.get("capabilities", [])
@@ -855,6 +939,51 @@ class AuthServer:
                     trace_id=payload.get("trace_id", ""),
                 )
                 raise PermissionError(f"Token lacks required capability: {required_capability} [ERR_CAPABILITY_INSUFFICIENT]")
+
+        if dpop_proof:
+            agent = self._get_agent(payload.get("agent_id", ""))
+            if agent and agent.get("encryption_public_key"):
+                dpop_result = self.dpop_verifier.verify_dpop_proof(
+                    dpop_proof_jwt=dpop_proof,
+                    public_key_pem=agent["encryption_public_key"],
+                    htm="POST",
+                    htu="/api/tokens/verify",
+                    access_token=token,
+                )
+                if not dpop_result.valid:
+                    self.audit_logger.write_log(
+                        requesting_agent=verifier_agent_id,
+                        action_type="token_verify",
+                        decision="DENY",
+                        deny_reason=f"DPoP proof invalid: {dpop_result.error_message}",
+                        error_code=f"ERR_{dpop_result.error_code}",
+                        trace_id=payload.get("trace_id", ""),
+                    )
+                    raise PermissionError(f"DPoP proof verification failed: {dpop_result.error_message} [ERR_{dpop_result.error_code}]")
+            else:
+                self.audit_logger.write_log(
+                    requesting_agent=verifier_agent_id,
+                    action_type="token_verify",
+                    decision="DENY",
+                    deny_reason="DPoP proof provided but no public key for token holder",
+                    error_code="ERR_DPOP_NO_KEY",
+                    trace_id=payload.get("trace_id", ""),
+                )
+                raise PermissionError("DPoP proof provided but no public key available [ERR_DPOP_NO_KEY]")
+
+        token_agent_id = payload.get("agent_id", "")
+        if token_agent_id:
+            svid = self.svid_manager.get_svid(token_agent_id)
+            if svid and svid.expires_at < time.time():
+                self.audit_logger.write_log(
+                    requesting_agent=verifier_agent_id,
+                    action_type="token_verify",
+                    decision="DENY",
+                    deny_reason="Token holder SVID expired",
+                    error_code="ERR_SVID_EXPIRED",
+                    trace_id=payload.get("trace_id", ""),
+                )
+                raise PermissionError("Token holder SVID has expired [ERR_SVID_EXPIRED]")
 
         agent_id = payload.get("agent_id", "")
         signature_hex = payload.get("signature", "")
@@ -1100,3 +1229,23 @@ class AuthServer:
 
     def get_global_timeline(self, limit: int = 100) -> list:
         return self.audit_logger.get_global_timeline(limit)
+
+    def get_compliance_report(self) -> dict:
+        return self.incident_responder.generate_compliance_report()
+
+    def get_incidents(self, agent_id: str = None, limit: int = 50) -> list:
+        return self.incident_responder.get_open_incidents(agent_id, limit)
+
+    def get_incident_stats(self) -> dict:
+        return self.incident_responder.get_incident_stats()
+
+    def resolve_incident(self, incident_id: int) -> dict:
+        return self.incident_responder.resolve_incident(incident_id)
+
+    def issue_nonce(self, agent_id: str) -> str:
+        return self.nonce_manager.issue_nonce(agent_id)
+
+    def cleanup_expired_data(self) -> dict:
+        token_cleanup = self.token_manager.cleanup_expired()
+        nonce_cleanup = self.nonce_manager.cleanup_expired()
+        return {"tokens": token_cleanup, "nonces": nonce_cleanup}

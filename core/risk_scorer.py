@@ -1,4 +1,5 @@
 import json
+import math
 import time
 import sqlite3
 
@@ -8,13 +9,36 @@ class RiskScorer:
     RISK_THRESHOLD_DOWNGRADE = 70
     RISK_THRESHOLD_FREEZE = 90
     RISK_THRESHOLD_REVOKE = 80
-    FREEZE_DURATION_SECONDS = 300
 
-    WEIGHT_REQUEST_FREQUENCY = 0.20
-    WEIGHT_CHAIN_DEPTH = 0.20
-    WEIGHT_TIME_PERIOD = 0.15
-    WEIGHT_CAPABILITY_COMBO = 0.25
-    WEIGHT_HISTORY_VIOLATIONS = 0.20
+    DEFAULT_WEIGHTS = {
+        "request_frequency": 0.18,
+        "chain_depth": 0.15,
+        "time_period": 0.12,
+        "capability_combo": 0.25,
+        "history_violations": 0.18,
+        "behavior_anomaly": 0.12,
+    }
+
+    CAPABILITY_RISK_MAP = {
+        "lark:contact:read": 0.8,
+        "lark:contact:write": 0.95,
+        "lark:bitable:read": 0.5,
+        "lark:bitable:write": 0.85,
+        "lark:doc:write": 0.6,
+        "lark:doc:read": 0.3,
+        "web:search": 0.2,
+        "web:fetch": 0.3,
+        "delegate:DataAgent:read": 0.7,
+        "delegate:DataAgent:write": 0.9,
+        "delegate:SearchAgent:read": 0.4,
+    }
+
+    DANGEROUS_COMBOS = [
+        ({"lark:contact:read", "web:search"}, 0.3),
+        ({"lark:bitable:read", "web:fetch"}, 0.25),
+        ({"lark:contact:read", "lark:bitable:write"}, 0.35),
+        ({"lark:bitable:read", "lark:bitable:write"}, 0.2),
+    ]
 
     DIMENSIONS = [
         "request_frequency",
@@ -22,10 +46,21 @@ class RiskScorer:
         "time_period",
         "capability_combo",
         "history_violations",
+        "behavior_anomaly",
     ]
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._weights = dict(self.DEFAULT_WEIGHTS)
+
+    def set_weights(self, weights: dict):
+        for k, v in weights.items():
+            if k in self._weights:
+                self._weights[k] = float(v)
+        total = sum(self._weights.values())
+        if total > 0:
+            for k in self._weights:
+                self._weights[k] /= total
 
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -33,14 +68,7 @@ class RiskScorer:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def compute_risk_score(self, agent_id: str, capabilities: list) -> dict:
-        conn = self._get_conn()
-
-        agent_row = conn.execute(
-            "SELECT trust_score FROM agents WHERE agent_id = ?", (agent_id,)
-        ).fetchone()
-        trust_score = agent_row["trust_score"] if agent_row else 50.0
-
+    def _compute_freq_risk(self, agent_id: str, conn) -> float:
         now = time.time()
         one_hour_ago = now - 3600
         freq_row = conn.execute(
@@ -48,30 +76,41 @@ class RiskScorer:
             (agent_id, one_hour_ago),
         ).fetchone()
         request_count = freq_row["cnt"] if freq_row else 0
-        freq_risk = min(1.0, request_count / 50.0)
+        return min(1.0, request_count / 50.0)
 
+    def _compute_depth_risk(self, agent_id: str, conn) -> float:
         depth_row = conn.execute(
             "SELECT MAX(attenuation_level) as max_depth FROM tokens WHERE agent_id = ? AND is_revoked = 0",
             (agent_id,),
         ).fetchone()
         max_depth = depth_row["max_depth"] if depth_row and depth_row["max_depth"] is not None else 0
-        depth_risk = min(1.0, max_depth * 0.25)
+        return min(1.0, max_depth * 0.25)
 
-        hour = time.localtime(now).tm_hour
+    def _compute_time_risk(self) -> float:
+        hour = time.localtime().tm_hour
         if hour < 6 or hour > 22:
-            time_risk = 0.7
+            return 0.7
         elif hour < 8 or hour > 20:
-            time_risk = 0.3
-        else:
-            time_risk = 0.1
+            return 0.3
+        return 0.1
 
-        cap_count = len(capabilities)
+    def _compute_capability_risk(self, capabilities: list) -> float:
+        if not capabilities:
+            return 0.0
+        cap_set = set(capabilities)
+        base_risk = sum(self.CAPABILITY_RISK_MAP.get(c, 0.1) for c in capabilities) / len(capabilities)
         write_caps = [c for c in capabilities if ":write" in c or ":delete" in c]
         sensitive_caps = [c for c in capabilities if "contact" in c or "admin" in c]
-        combo_risk = min(1.0, (cap_count * 0.08 + len(write_caps) * 0.15 + len(sensitive_caps) * 0.25))
+        combo_bonus = 0.0
+        for dangerous_set, bonus in self.DANGEROUS_COMBOS:
+            if dangerous_set.issubset(cap_set):
+                combo_bonus += bonus
+        return min(1.0, base_risk * 0.5 + len(write_caps) * 0.12 + len(sensitive_caps) * 0.2 + combo_bonus)
 
+    def _compute_history_risk(self, agent_id: str, conn) -> float:
+        now = time.time()
         deny_row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM audit_logs WHERE requesting_agent = ? AND decision = 'DENY'",
+            "SELECT COUNT(*) as cnt, MAX(timestamp) as last_deny FROM audit_logs WHERE requesting_agent = ? AND decision = 'DENY'",
             (agent_id,),
         ).fetchone()
         deny_count = deny_row["cnt"] if deny_row else 0
@@ -80,16 +119,51 @@ class RiskScorer:
             (agent_id,),
         ).fetchone()
         inj_count = inj_row["cnt"] if inj_row else 0
-        history_risk = min(1.0, deny_count * 0.1 + inj_count * 0.25)
+        base_risk = deny_count * 0.1 + inj_count * 0.25
+        last_deny = deny_row["last_deny"] if deny_row and deny_row["last_deny"] else 0
+        if last_deny > 0:
+            decay_hours = (now - last_deny) / 3600
+            decay_factor = math.exp(-decay_hours / 168)
+            base_risk *= (0.5 + 0.5 * decay_factor)
+        return min(1.0, base_risk)
+
+    def _compute_behavior_risk(self, agent_id: str, capabilities: list, delegation_depth: int) -> float:
+        try:
+            from core.behavior_analyzer import BehaviorAnalyzer
+            ba = BehaviorAnalyzer(self.db_path)
+            anomaly = ba.check_anomaly(agent_id, capabilities, delegation_depth)
+            if anomaly.get("is_anomaly"):
+                if anomaly.get("anomaly_level") == "critical":
+                    return 0.9
+                return 0.6
+        except Exception:
+            pass
+        return 0.0
+
+    def compute_risk_score(self, agent_id: str, capabilities: list, delegation_depth: int = 0) -> dict:
+        conn = self._get_conn()
+
+        agent_row = conn.execute(
+            "SELECT trust_score FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        trust_score = agent_row["trust_score"] if agent_row else 50.0
+
+        freq_risk = self._compute_freq_risk(agent_id, conn)
+        depth_risk = self._compute_depth_risk(agent_id, conn)
+        time_risk = self._compute_time_risk()
+        combo_risk = self._compute_capability_risk(capabilities)
+        history_risk = self._compute_history_risk(agent_id, conn)
+        behavior_risk = self._compute_behavior_risk(agent_id, capabilities, delegation_depth)
 
         conn.close()
 
         risk_score = (
-            freq_risk * self.WEIGHT_REQUEST_FREQUENCY
-            + depth_risk * self.WEIGHT_CHAIN_DEPTH
-            + time_risk * self.WEIGHT_TIME_PERIOD
-            + combo_risk * self.WEIGHT_CAPABILITY_COMBO
-            + history_risk * self.WEIGHT_HISTORY_VIOLATIONS
+            freq_risk * self._weights["request_frequency"]
+            + depth_risk * self._weights["chain_depth"]
+            + time_risk * self._weights["time_period"]
+            + combo_risk * self._weights["capability_combo"]
+            + history_risk * self._weights["history_violations"]
+            + behavior_risk * self._weights["behavior_anomaly"]
         ) * 100
 
         trust_modifier = max(0, (100 - trust_score) / 200)
@@ -116,13 +190,16 @@ class RiskScorer:
                 "time_period": round(time_risk * 100, 1),
                 "capability_combo": round(combo_risk * 100, 1),
                 "history_violations": round(history_risk * 100, 1),
+                "behavior_anomaly": round(behavior_risk * 100, 1),
             },
             "agent_id": agent_id,
+            "trust_score": trust_score,
             "thresholds": {
                 "downgrade": self.RISK_THRESHOLD_DOWNGRADE,
                 "freeze": self.RISK_THRESHOLD_FREEZE,
                 "revoke": self.RISK_THRESHOLD_REVOKE,
             },
+            "weights": self._weights,
         }
 
     def update_trust_score(self, agent_id: str, delta: float) -> float:

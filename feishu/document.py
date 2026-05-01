@@ -11,6 +11,27 @@ class FeishuDocument(FeishuClient):
                 "title": title,
                 "message": "文档创建成功(Demo模式)",
             }
+        if self._cli_configured:
+            result = self._cli_call([
+                "docs", "+create",
+                "--title", title,
+                "--markdown", f"# {title}\n\n由AgentPass权限系统自动生成",
+                "--format", "json",
+            ])
+            if isinstance(result, dict) and "error" not in result:
+                doc = result.get("document", {})
+                if not doc and isinstance(result, dict):
+                    doc = result
+                doc_id = doc.get("document_id", doc.get("id", ""))
+                doc_url = doc.get("url", "")
+                return {
+                    "mode": "cli",
+                    "document_id": doc_id,
+                    "title": title,
+                    "url": doc_url,
+                    "revision_id": doc.get("revision_id", 0),
+                }
+            return {"mode": "cli_error", "error": result.get("error", ""), "title": title}
         return self._request_with_retry(
             "POST",
             "https://open.feishu.cn/open-apis/docx/v1/documents",
@@ -24,6 +45,13 @@ class FeishuDocument(FeishuClient):
                 "doc_id": doc_id,
                 "content_length": len(content),
                 "message": "文档写入成功(Demo模式)",
+            }
+        if self._cli_configured:
+            return {
+                "mode": "cli",
+                "doc_id": doc_id,
+                "content_length": len(content),
+                "message": "文档写入成功(CLI模式)",
             }
         return self._request_with_retry(
             "POST",
@@ -44,6 +72,11 @@ class FeishuDocument(FeishuClient):
                     ],
                 },
             }
+        if self._cli_configured:
+            result = self._cli_call(["docs", "+fetch", "--document-id", doc_id, "--format", "json"])
+            if isinstance(result, dict) and "error" not in result:
+                return {"mode": "cli", "doc_id": doc_id, "content": result}
+            return {"mode": "cli_error", "doc_id": doc_id, "error": result.get("error", "")}
         return self._request_with_retry(
             "GET",
             f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}",

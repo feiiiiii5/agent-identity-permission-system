@@ -1,5 +1,7 @@
 import re
 import hashlib
+import base64
+import urllib.parse
 
 
 class InjectionScanner:
@@ -67,7 +69,31 @@ class InjectionScanner:
         r"删除.{0,4}(所有|全部|数据库|记录|文件)",
     ]
 
-    def scan(self, text: str) -> dict:
+    ENCODING_BYPASS_PATTERNS = [
+        r"\\x[0-9a-fA-F]{2}",
+        r"\\u[0-9a-fA-F]{4}",
+        r"\\[0-7]{3}",
+        r"%[0-9a-fA-F]{2}%[0-9a-fA-F]{2}",
+        r"&#x[0-9a-fA-F]+;",
+        r"&#\d+;",
+        r"\\n\\n(ACT|SYSTEM|USER|ASSISTANT)",
+        r"\[INST\]",
+        r"\</?s\>",
+        r"<\|im_start\|>",
+        r"<\|im_end\|>",
+    ]
+
+    SEVERITY_WEIGHTS = {
+        "system_override": 1.0,
+        "privilege_declaration": 0.8,
+        "unauthorized_tool": 0.7,
+        "social_engineering": 0.5,
+        "repetition_attack": 0.4,
+        "encoding_bypass": 0.9,
+        "context_injection": 0.6,
+    }
+
+    def scan(self, text: str, context: dict = None) -> dict:
         if not text:
             return {"is_injection": False, "confidence": 0.0, "threats": []}
 
@@ -106,11 +132,22 @@ class InjectionScanner:
                     "severity": "high",
                 })
 
+        encoding_threats = self._detect_encoding_bypass(text)
+        threats.extend(encoding_threats)
+
         semantic_threats = self._semantic_analysis(text)
         threats.extend(semantic_threats)
 
+        context_threats = self._context_analysis(text, context)
+        threats.extend(context_threats)
+
+        decoded_threats = self._scan_decoded_variants(text)
+        for dt in decoded_threats:
+            if not any(t["type"] == dt["type"] and t.get("matched_text") == dt.get("matched_text") for t in threats):
+                threats.append(dt)
+
         is_injection = len(threats) > 0
-        confidence = min(1.0, len(threats) * 0.3) if is_injection else 0.0
+        confidence = self._compute_confidence(threats) if is_injection else 0.0
 
         sanitized = self._sanitize_content(text) if is_injection else text
 
@@ -124,8 +161,68 @@ class InjectionScanner:
             "layers": {
                 "keyword_regex": any(t["layer"] == "keyword_regex" for t in threats),
                 "semantic_rules": any(t["layer"] == "semantic_rules" for t in threats),
+                "encoding_detection": any(t["layer"] == "encoding_detection" for t in threats),
+                "context_analysis": any(t["layer"] == "context_analysis" for t in threats),
             },
         }
+
+    def _compute_confidence(self, threats: list) -> float:
+        if not threats:
+            return 0.0
+        weighted_sum = sum(self.SEVERITY_WEIGHTS.get(t["type"], 0.3) for t in threats)
+        max_possible = len(threats) * 1.0
+        base_confidence = weighted_sum / max_possible if max_possible > 0 else 0
+        threat_bonus = min(0.3, len(threats) * 0.05)
+        critical_count = sum(1 for t in threats if t.get("severity") == "critical")
+        critical_bonus = min(0.2, critical_count * 0.1)
+        return min(1.0, base_confidence + threat_bonus + critical_bonus)
+
+    def _detect_encoding_bypass(self, text: str) -> list:
+        threats = []
+        for pattern in self.ENCODING_BYPASS_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                threats.append({
+                    "type": "encoding_bypass",
+                    "pattern": pattern,
+                    "matched_text": match.group(),
+                    "layer": "encoding_detection",
+                    "severity": "high",
+                })
+                break
+        return threats
+
+    def _scan_decoded_variants(self, text: str) -> list:
+        threats = []
+        variants = []
+        try:
+            url_decoded = urllib.parse.unquote(text)
+            if url_decoded != text:
+                variants.append(url_decoded)
+        except Exception:
+            pass
+        try:
+            if re.match(r'^[A-Za-z0-9+/=]+$', text[:100]):
+                decoded = base64.b64decode(text[:200]).decode("utf-8", errors="ignore")
+                if decoded and decoded != text:
+                    variants.append(decoded)
+        except Exception:
+            pass
+        for variant in variants:
+            for pattern in self.SYSTEM_OVERRIDE_PATTERNS[:5]:
+                match = re.search(pattern, variant, re.IGNORECASE)
+                if match:
+                    threats.append({
+                        "type": "system_override",
+                        "pattern": f"decoded:{pattern}",
+                        "matched_text": match.group(),
+                        "layer": "encoding_detection",
+                        "severity": "critical",
+                    })
+                    break
+            if threats:
+                break
+        return threats
 
     def _semantic_analysis(self, text: str) -> list:
         threats = []
@@ -159,9 +256,40 @@ class InjectionScanner:
 
         return threats
 
+    def _context_analysis(self, text: str, context: dict = None) -> list:
+        threats = []
+        if not context:
+            return threats
+
+        agent_caps = context.get("agent_capabilities", [])
+        if agent_caps:
+            cap_keywords = set()
+            for cap in agent_caps:
+                parts = cap.split(":")
+                if len(parts) >= 2:
+                    cap_keywords.add(parts[-1])
+            text_lower = text.lower()
+            for kw in ["write", "delete", "admin", "root"]:
+                if kw in text_lower and kw not in cap_keywords:
+                    threats.append({
+                        "type": "context_injection",
+                        "pattern": f"capability_mismatch:{kw}",
+                        "matched_text": kw,
+                        "layer": "context_analysis",
+                        "severity": "medium",
+                    })
+
+        return threats
+
     def _sanitize_content(self, text: str) -> str:
         sanitized = text
-        for pattern in (self.SYSTEM_OVERRIDE_PATTERNS + self.PRIVILEGE_DECLARATION_PATTERNS + self.UNAUTHORIZED_TOOL_PATTERNS):
+        all_patterns = (
+            self.SYSTEM_OVERRIDE_PATTERNS
+            + self.PRIVILEGE_DECLARATION_PATTERNS
+            + self.UNAUTHORIZED_TOOL_PATTERNS
+            + self.ENCODING_BYPASS_PATTERNS
+        )
+        for pattern in all_patterns:
             sanitized = re.sub(pattern, "[REDACTED]", sanitized, flags=re.IGNORECASE)
         if len(sanitized) > 200:
             sanitized = sanitized[:200] + "...[truncated]"

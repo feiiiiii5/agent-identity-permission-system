@@ -90,6 +90,57 @@ body {
 ::-webkit-scrollbar { width: 4px }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px }
 
+/* ─────────── DASHBOARD CARDS ─────────── */
+.dash-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.dash-card:hover { transform: translateY(-2px); box-shadow: var(--shadow) }
+.dc-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-4); margin-bottom: 8px;
+}
+.dc-sub { font-size: 12px; color: var(--text-3); margin-top: 4px }
+.dc-timeline-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.dc-timeline-item:last-child { border-bottom: none }
+.dc-tl-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  margin-top: 5px; flex-shrink: 0;
+}
+.dc-tl-content { flex: 1 }
+.dc-tl-time { font-family: var(--mono); font-size: 10px; color: var(--text-4) }
+.agent-card-mini {
+  background: var(--bg-2); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin-bottom: 8px;
+  border: 1px solid var(--border);
+}
+.acm-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px }
+.acm-icon { font-size: 16px }
+.acm-name { font-weight: 600; font-size: 13px }
+.acm-id { font-family: var(--mono); font-size: 10px; color: var(--text-4) }
+.acm-caps { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px }
+.acm-cap {
+  font-size: 9px; padding: 2px 6px; border-radius: 4px;
+  background: var(--accent-dim); color: var(--accent);
+  font-family: var(--mono);
+}
+.acm-risk {
+  display: flex; align-items: center; gap: 6px; margin-top: 6px;
+  font-size: 11px;
+}
+.acm-risk-bar {
+  flex: 1; height: 4px; border-radius: 2px; background: var(--bg-3);
+  overflow: hidden;
+}
+.acm-risk-fill { height: 100%; border-radius: 2px; transition: width 0.5s }
+
 /* ─────────── NAV ─────────── */
 .nav {
   position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
@@ -124,6 +175,7 @@ body {
   transition: color 0.2s;
 }
 .nav-links a:hover { color: var(--text) }
+.nav-links a.active { color: var(--accent) }
 .nav-right { display: flex; align-items: center; gap: 8px; margin-left: auto }
 .nav-status {
   display: flex; align-items: center; gap: 6px;
@@ -375,7 +427,7 @@ section { padding: 100px 24px }
 .demo-layout {
   display: grid;
   grid-template-columns: 220px 1fr 280px;
-  height: 560px;
+  height: 620px;
   overflow: hidden;
 }
 
@@ -454,7 +506,7 @@ section { padding: 100px 24px }
   color: var(--text-4); font-size: 13px; text-align: center; gap: 8px;
 }
 .flow-empty-icon { font-size: 32px }
-.flow-steps { display: flex; flex-direction: column; gap: 6px }
+.flow-steps { display: flex; flex-direction: column; gap: 3px }
 .flow-step {
   display: flex; gap: 10px; opacity: 0; transform: translateY(-8px);
   transition: all 0.35s cubic-bezier(0.16,1,0.3,1);
@@ -478,15 +530,15 @@ section { padding: 100px 24px }
 .flow-step.error .flow-step-title { color: var(--danger) }
 .flow-step.warning .flow-step-title { color: var(--warning) }
 .flow-step-desc { font-size: 11px; color: var(--text-4); margin-top: 1px; line-height: 1.4 }
-.flow-detail { margin-top: 7px; overflow: hidden; max-height: 0; opacity: 0; transition: max-height 0.4s cubic-bezier(0.16,1,0.3,1), opacity 0.3s }
+.flow-detail { margin-top: 5px; overflow: hidden; max-height: 0; opacity: 0; transition: max-height 0.4s cubic-bezier(0.16,1,0.3,1), opacity 0.3s }
 .flow-step.active .flow-detail,
 .flow-step.success .flow-detail,
-.flow-step.error .flow-detail { max-height: 180px; opacity: 1; overflow-y: auto }
+.flow-step.error .flow-detail { max-height: 100px; opacity: 1; overflow-y: auto }
 
 .token-preview {
   background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 4px;
-  max-height: 140px; overflow-y: auto;
+  border-radius: var(--radius-sm); padding: 6px 8px; margin-top: 4px;
+  max-height: 80px; overflow-y: auto;
 }
 .tp-status {
   display: inline-flex; align-items: center; gap: 4px;
@@ -520,8 +572,8 @@ section { padding: 100px 24px }
 
 .scan-card {
   background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 7px 9px; margin-top: 4px;
-  max-height: 100px; overflow-y: auto;
+  border-radius: var(--radius-sm); padding: 5px 7px; margin-top: 4px;
+  max-height: 60px; overflow-y: auto;
 }
 .scan-layers { display: flex; gap: 5px; margin-bottom: 6px }
 .scan-layer {
@@ -735,8 +787,9 @@ footer {
     <li><a href="#features">创新点</a></li>
     <li><a href="#architecture">架构</a></li>
     <li><a href="#demo">演示</a></li>
+    <li><a href="#dashboard">安全中心</a></li>
     <li><a href="#comparison">对比</a></li>
-    <li><a href="#owasp">安全</a></li>
+    <li><a href="#owasp">OWASP</a></li>
   </ul>
   <div class="nav-right">
     <div class="nav-status">
@@ -970,6 +1023,10 @@ footer {
           <div class="metric-val" id="m-chain" style="color:var(--success)">—</div>
           <div class="metric-lbl">审计链</div>
         </div>
+        <div class="metric-pill">
+          <div class="metric-val" id="m-health" style="color:var(--success)">—</div>
+          <div class="metric-lbl">健康分</div>
+        </div>
       </div>
       <!-- Main layout -->
       <div class="demo-layout">
@@ -991,6 +1048,10 @@ footer {
               <div>点击"运行演示"或选择场景后点击下方按钮</div>
               <div style="color:var(--text-4);font-size:11px">按空格键快速启动 · 数字键 1-6 切换场景</div>
             </div>
+          </div>
+          <div style="display:flex;gap:6px;padding:6px 10px;border-top:1px solid var(--border)">
+            <input type="text" id="intent-input" placeholder="输入自然语言指令，如：生成季度销售报告" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-xs);font-size:12px;background:var(--bg);color:var(--text);outline:none" onkeydown="if(event.key==='Enter')runIntent()">
+            <button class="btn btn-primary btn-sm" onclick="runIntent()">发送</button>
           </div>
           <div class="demo-toolbar">
             <button class="btn btn-primary btn-sm" id="btn-run" onclick="runCurrentDemo()">▶ 运行</button>
@@ -1053,6 +1114,70 @@ footer {
   </div>
 </section>
 
+<!-- ─────────── SECURITY DASHBOARD ─────────── -->
+<section id="dashboard" style="background:var(--bg-2)">
+  <div class="section-inner" style="max-width:1200px">
+    <span class="section-eyebrow reveal">安全运营中心</span>
+    <h2 class="section-title reveal reveal-delay-1">实时安全态势感知</h2>
+    <p class="section-desc reveal reveal-delay-2">合规评分、安全事件、风险维度、Agent Card 全景视图，一键掌握系统安全状态。</p>
+
+    <div class="dash-grid reveal reveal-delay-3" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:36px">
+      <div class="dash-card" style="grid-column:span 1">
+        <div class="dc-label">合规评分</div>
+        <div id="dash-compliance" style="font-family:var(--display);font-size:56px;font-weight:800;letter-spacing:-0.04em;color:var(--success)">—</div>
+        <div id="dash-compliance-status" class="dc-sub">加载中…</div>
+      </div>
+      <div class="dash-card" style="grid-column:span 1">
+        <div class="dc-label">开放事件</div>
+        <div id="dash-incidents" style="font-family:var(--display);font-size:56px;font-weight:800;letter-spacing:-0.04em;color:var(--accent)">—</div>
+        <div id="dash-incident-status" class="dc-sub">加载中…</div>
+      </div>
+      <div class="dash-card" style="grid-column:span 1">
+        <div class="dc-label">审计链</div>
+        <div id="dash-chain" style="font-family:var(--display);font-size:56px;font-weight:800;letter-spacing:-0.04em;color:var(--success)">—</div>
+        <div id="dash-chain-status" class="dc-sub">加载中…</div>
+      </div>
+    </div>
+
+    <div class="dash-grid reveal reveal-delay-3" style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px">
+      <div class="dash-card">
+        <div class="dc-label">风险维度雷达</div>
+        <canvas id="radar-canvas" style="width:100%;height:260px"></canvas>
+      </div>
+      <div class="dash-card">
+        <div class="dc-label">Agent Card</div>
+        <div id="dash-agent-cards" style="max-height:260px;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <div class="dash-grid reveal reveal-delay-3" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+      <div class="dash-card">
+        <div class="dc-label">安全事件时间线</div>
+        <div id="dash-timeline" style="max-height:220px;overflow-y:auto"></div>
+      </div>
+      <div class="dash-card">
+        <div class="dc-label">威胁类型分布</div>
+        <canvas id="threat-chart" style="width:100%;height:220px"></canvas>
+      </div>
+    </div>
+
+    <div class="dash-grid reveal reveal-delay-3" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">
+      <div class="dash-card">
+        <div class="dc-label">24h Token签发</div>
+        <div id="dash-tokens-24h" style="font-family:var(--display);font-size:32px;font-weight:700;color:var(--accent)">—</div>
+      </div>
+      <div class="dash-card">
+        <div class="dc-label">24h 注入拦截</div>
+        <div id="dash-injections-24h" style="font-family:var(--display);font-size:32px;font-weight:700;color:var(--danger)">—</div>
+      </div>
+      <div class="dash-card">
+        <div class="dc-label">24h 权限升级</div>
+        <div id="dash-escalations-24h" style="font-family:var(--display);font-size:32px;font-weight:700;color:var(--warning)">—</div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ─────────── OWASP ─────────── -->
 <section id="owasp">
   <div class="section-inner">
@@ -1099,6 +1224,15 @@ footer {
         <a href="#demo" onclick="selectScenario('injection-defense')">Prompt 注入防御</a>
         <a href="#demo" onclick="selectScenario('human-approval')">人工审批断路器</a>
         <a href="#demo" onclick="selectScenario('privilege-escalation')">特权升级检测</a>
+      </div>
+    </div>
+    <div>
+      <div class="footer-col-title">安全中心</div>
+      <div class="footer-links">
+        <a href="#dashboard">合规仪表盘</a>
+        <a href="#dashboard">安全事件</a>
+        <a href="#dashboard">Agent Card</a>
+        <a href="#dashboard">风险雷达</a>
       </div>
     </div>
   </div>
@@ -1284,6 +1418,12 @@ function handleWSMsg(msg) {
   if (msg.type === 'human_approval_required') showApprovalModal(msg.data);
   if (['token_issued','delegation_success','delegation_denied','token_revoked'].includes(msg.type)) refreshMetrics();
   if (msg.type === 'privilege_escalation') addAuditEntry({ decision:'ALERT', action_type:'privilege_escalation', requesting_agent: msg.data?.agent_id || 'system', deny_reason:'特权升级检测' });
+  if (msg.type === 'token_revoked_by_risk') {
+    refreshMetrics(); loadAgents();
+    const agentEl = document.querySelector(`[data-agent-id="${msg.data?.agent_id}"] .ae-reason`);
+    if (agentEl) agentEl.textContent = '已冻结';
+    toast(`⚠️ ${msg.data?.agent_id} 风险评分≥90，Token已撤销`);
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1306,6 +1446,15 @@ async function refreshMetrics() {
     if (chainEl) { chainEl.textContent = valid ? '✓' : '✗'; chainEl.style.color = valid ? 'var(--success)' : 'var(--danger)' }
     const footerEl = document.getElementById('footer-chain-status');
     if (footerEl) { footerEl.textContent = valid ? `✓ 完整 (${m.audit_chain?.total_records ?? 0} 条)` : '✗ 断裂'; footerEl.style.color = valid ? 'var(--success)' : 'var(--danger)' }
+  } catch(_) {}
+  try {
+    const h = await api('/system/health');
+    const healthEl = document.getElementById('m-health');
+    if (healthEl) {
+      const score = h.health_score ?? 0;
+      healthEl.textContent = score;
+      healthEl.style.color = score >= 80 ? 'var(--success)' : score >= 50 ? 'var(--warning)' : 'var(--danger)';
+    }
   } catch(_) {}
 }
 
@@ -1417,10 +1566,16 @@ function activateStep(i, type = 'active') {
       el.classList.remove('active','success','error','warning'); el.classList.add(type);
       const flowContainer = document.getElementById('demo-flow');
       if (flowContainer) {
-        const elRect = el.getBoundingClientRect();
-        const containerRect = flowContainer.getBoundingClientRect();
-        const offset = elRect.top - containerRect.top + flowContainer.scrollTop - 20;
-        flowContainer.scrollTo({ top: offset, behavior: 'smooth' });
+        setTimeout(() => {
+          const elRect = el.getBoundingClientRect();
+          const containerRect = flowContainer.getBoundingClientRect();
+          const elBottom = elRect.bottom;
+          const containerBottom = containerRect.bottom;
+          if (elBottom > containerBottom - 10) {
+            const scrollDelta = elBottom - containerBottom + 20;
+            flowContainer.scrollTo({ top: flowContainer.scrollTop + scrollDelta, behavior: 'smooth' });
+          }
+        }, 450);
       }
     }
   });
@@ -1708,13 +1863,12 @@ async function runDemo(key) {
   const demoShell = document.querySelector('.demo-shell');
   if (demoShell) {
     const rect = demoShell.getBoundingClientRect();
-    const offset = rect.top + window.scrollY - 60;
-    window.scrollTo({ top: offset, behavior: 'smooth' });
+    if (rect.top < 0 || rect.bottom > window.innerHeight) {
+      const offset = rect.top + window.scrollY - 40;
+      window.scrollTo({ top: offset, behavior: 'smooth' });
+    }
   }
   await sleep(300);
-  const lockedScrollY = window.scrollY;
-  const lockScroll = () => { window.scrollTo(0, lockedScrollY) };
-  window.addEventListener('scroll', lockScroll);
   try {
     const result = await api(ENDPOINTS[key], { method: 'POST' });
     const steps = result.steps || [];
@@ -1729,7 +1883,6 @@ async function runDemo(key) {
     setProgress(0, '连接失败');
     toast('演示执行失败，请确认服务已启动');
   }
-  window.removeEventListener('scroll', lockScroll);
   if (btnRun) btnRun.disabled = false;
   if (btnAll) btnAll.disabled = false;
   state.running = false;
@@ -1741,6 +1894,49 @@ async function runAllDemos() {
   const order = Object.keys(SCENARIOS);
   for (const k of order) { await runDemo(k); await sleep(800) }
   toast('✓ 全部 6 个场景演示完成');
+}
+
+async function runIntent() {
+  const input = document.getElementById('intent-input');
+  if (!input || !input.value.trim() || state.running) return;
+  const text = input.value.trim();
+  input.value = '';
+  state.running = true;
+  const btnRun = document.getElementById('btn-run');
+  const btnAll = document.getElementById('btn-all');
+  if (btnRun) btnRun.disabled = true;
+  if (btnAll) btnAll.disabled = true;
+  setProgress(0, '解析意图…');
+  try {
+    const result = await api('/intent/route', { method: 'POST', body: JSON.stringify({ text }) });
+    if (result.routed && result.steps) {
+      selectScenario('normal-delegation');
+      renderFlowSteps('normal-delegation');
+      for (let i = 0; i < result.steps.length; i++) {
+        handleDemoStep(result.steps[i]);
+        setProgress(((i+1)/result.steps.length)*100, result.steps[i].description || `步骤 ${i+1}/${result.steps.length}`);
+        await sleep(550);
+      }
+      setProgress(100, '✓ 完成');
+      toast(`✓ 自然语言指令执行完成: ${result.friendly_name || result.intent}`);
+    } else if (result.blocked) {
+      toast('⚠️ 检测到注入攻击，指令已拦截');
+      setProgress(0, '已拦截');
+    } else {
+      toast(result.error || '未能理解指令');
+      setProgress(0, '未识别');
+      if (result.suggestions) {
+        toast(`💡 试试: ${result.suggestions.map(s=>s.text).join('、')}`);
+      }
+    }
+  } catch(e) {
+    toast('指令执行失败');
+    setProgress(0, '失败');
+  }
+  if (btnRun) btnRun.disabled = false;
+  if (btnAll) btnAll.disabled = false;
+  state.running = false;
+  refreshMetrics(); loadAuditLogs(); loadAgents();
 }
 
 function resetDemo() {
@@ -1823,16 +2019,259 @@ window.addEventListener('resize', () => { if (!state.animFrame) drawCanvas() });
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => drawCanvas());
 
 // ═══════════════════════════════════════════════════════
+//  SECURITY DASHBOARD
+// ═══════════════════════════════════════════════════════
+async function loadDashboard() {
+  try {
+    const report = await api('/compliance/report');
+    const score = report.compliance_score ?? 0;
+    const el = document.getElementById('dash-compliance');
+    if (el) {
+      el.textContent = score;
+      el.style.color = score >= 80 ? 'var(--success)' : score >= 50 ? 'var(--warning)' : 'var(--danger)';
+    }
+    const statusEl = document.getElementById('dash-compliance-status');
+    if (statusEl) {
+      const recs = report.recommendations || [];
+      statusEl.textContent = recs.length > 0 ? recs[0] : '系统运行正常';
+    }
+    const tokensEl = document.getElementById('dash-tokens-24h');
+    if (tokensEl) tokensEl.textContent = report.tokens?.issued_24h ?? '—';
+    const injEl = document.getElementById('dash-injections-24h');
+    if (injEl) injEl.textContent = report.security?.injections_24h ?? '—';
+    const escEl = document.getElementById('dash-escalations-24h');
+    if (escEl) escEl.textContent = report.security?.escalations_24h ?? '—';
+  } catch(_) {}
+
+  try {
+    const stats = await api('/incidents/stats');
+    const el = document.getElementById('dash-incidents');
+    if (el) {
+      el.textContent = stats.open ?? 0;
+      el.style.color = (stats.open ?? 0) > 0 ? 'var(--danger)' : 'var(--success)';
+    }
+    const statusEl = document.getElementById('dash-incident-status');
+    if (statusEl) statusEl.textContent = `总计 ${stats.total ?? 0}，已解决 ${stats.resolved ?? 0}`;
+    drawThreatChart(stats.by_type || {});
+  } catch(_) {}
+
+  try {
+    const integrity = await api('/audit/verify');
+    const el = document.getElementById('dash-chain');
+    if (el) {
+      el.textContent = integrity.valid ? '✓' : '✗';
+      el.style.color = integrity.valid ? 'var(--success)' : 'var(--danger)';
+    }
+    const statusEl = document.getElementById('dash-chain-status');
+    if (statusEl) statusEl.textContent = `${integrity.total_records ?? 0} 条记录`;
+  } catch(_) {}
+
+  try {
+    const incidents = await api('/incidents?limit=8');
+    const tl = document.getElementById('dash-timeline');
+    if (tl && incidents.incidents) {
+      tl.innerHTML = '';
+      incidents.incidents.forEach(inc => {
+        const color = inc.severity === 'critical' ? 'var(--danger)' : inc.severity === 'high' ? 'var(--warning)' : 'var(--accent)';
+        const time = new Date(inc.created_at * 1000).toLocaleTimeString('zh', {hour:'2-digit',minute:'2-digit'});
+        tl.innerHTML += `<div class="dc-timeline-item">
+          <div class="dc-tl-dot" style="background:${color}"></div>
+          <div class="dc-tl-content">
+            <div style="font-weight:500">${inc.incident_type} <span style="color:${color};font-size:10px">${inc.severity}</span></div>
+            <div style="color:var(--text-3)">${inc.agent_id || 'system'} — ${inc.description?.substring(0,40) || ''}</div>
+            <div class="dc-tl-time">${time}</div>
+          </div>
+        </div>`;
+      });
+      if (!incidents.incidents.length) tl.innerHTML = '<div style="color:var(--text-4);font-size:12px;padding:20px 0;text-align:center">暂无安全事件</div>';
+    }
+  } catch(_) {}
+
+  try {
+    const cards = await api('/.well-known/agent-card');
+    const container = document.getElementById('dash-agent-cards');
+    if (container && cards.agents) {
+      container.innerHTML = '';
+      cards.agents.forEach(a => {
+        const riskColor = a.risk_score < 40 ? 'var(--success)' : a.risk_score < 70 ? 'var(--warning)' : 'var(--danger)';
+        const icon = AGENT_ICONS[a.agent_id] || '🤖';
+        container.innerHTML += `<div class="agent-card-mini">
+          <div class="acm-header">
+            <span class="acm-icon">${icon}</span>
+            <span class="acm-name">${a.agent_name}</span>
+            <span class="acm-id">${a.agent_id}</span>
+          </div>
+          <div class="acm-caps">${(a.capabilities||[]).slice(0,4).map(c=>`<span class="acm-cap">${c}</span>`).join('')}</div>
+          <div class="acm-risk">
+            <span>风险</span>
+            <div class="acm-risk-bar"><div class="acm-risk-fill" style="width:${a.risk_score}%;background:${riskColor}"></div></div>
+            <span style="color:${riskColor};font-weight:600">${a.risk_score?.toFixed(0)}</span>
+          </div>
+        </div>`;
+      });
+    }
+  } catch(_) {}
+
+  drawRadarChart();
+}
+
+function drawRadarChart() {
+  const canvas = document.getElementById('radar-canvas');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const rect = wrap.getBoundingClientRect();
+  if (rect.width < 10) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = 260 * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = '260px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = 260;
+  ctx.clearRect(0, 0, W, H);
+
+  const labels = ['请求频率', '委托深度', '时间风险', '能力组合', '历史违规', '行为异常'];
+  const n = labels.length;
+  const cx = W / 2, cy = H / 2;
+  const R = Math.min(W, H) * 0.38;
+
+  for (let ring = 1; ring <= 4; ring++) {
+    const r = R * ring / 4;
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const angle = (Math.PI * 2 * i / n) - Math.PI / 2;
+      const x = cx + r * Math.cos(angle);
+      const y = cy + r * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = isDark() ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < n; i++) {
+    const angle = (Math.PI * 2 * i / n) - Math.PI / 2;
+    const x = cx + R * Math.cos(angle);
+    const y = cy + R * Math.sin(angle);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(x, y);
+    ctx.strokeStyle = isDark() ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)';
+    ctx.stroke();
+
+    const lx = cx + (R + 16) * Math.cos(angle);
+    const ly = cy + (R + 16) * Math.sin(angle);
+    ctx.fillStyle = isDark() ? '#98989f' : '#6e6e73';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(labels[i], lx, ly);
+  }
+
+  if (state.agents && Object.keys(state.agents).length > 0) {
+    const colors = ['#2997ff', '#30d158', '#bf5af2'];
+    let ci = 0;
+    Object.entries(state.agents).forEach(([id, agent]) => {
+      const risk = agent.risk_dimensions || {};
+      const values = [
+        (risk.request_frequency || 0) / 100,
+        (risk.chain_depth || 0) / 100,
+        (risk.time_period || 0) / 100,
+        (risk.capability_combo || 0) / 100,
+        (risk.history_violations || 0) / 100,
+        (risk.behavior_anomaly || 0) / 100,
+      ];
+      const color = colors[ci % colors.length];
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) {
+        const idx = i % n;
+        const angle = (Math.PI * 2 * idx / n) - Math.PI / 2;
+        const v = Math.max(0.05, values[idx]);
+        const x = cx + R * v * Math.cos(angle);
+        const y = cy + R * v * Math.sin(angle);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.fillStyle = color + '20';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ci++;
+    });
+  }
+}
+
+function drawThreatChart(byType) {
+  const canvas = document.getElementById('threat-chart');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const rect = wrap.getBoundingClientRect();
+  if (rect.width < 10) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = 220 * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = '220px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = 220;
+  ctx.clearRect(0, 0, W, H);
+
+  const entries = Object.entries(byType);
+  if (!entries.length) {
+    ctx.fillStyle = isDark() ? '#636366' : '#a1a1a6';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('暂无威胁数据', W / 2, H / 2);
+    return;
+  }
+
+  const total = entries.reduce((s, e) => s + e[1], 0);
+  const colors = ['#ff453a', '#ff9f0a', '#2997ff', '#30d158', '#bf5af2', '#64d2ff'];
+  let startAngle = -Math.PI / 2;
+  const cx = W * 0.35, cy = H / 2, r = Math.min(W * 0.3, H * 0.4);
+
+  entries.forEach(([type, count], i) => {
+    const sliceAngle = (count / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, startAngle, startAngle + sliceAngle);
+    ctx.closePath();
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fill();
+    startAngle += sliceAngle;
+  });
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+  ctx.fillStyle = isDark() ? '#000' : '#fff';
+  ctx.fill();
+
+  let ly = 20;
+  entries.forEach(([type, count], i) => {
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillRect(W * 0.7, ly, 8, 8);
+    ctx.fillStyle = isDark() ? '#d1d1d6' : '#424245';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${type} (${count})`, W * 0.7 + 14, ly + 8);
+    ly += 18;
+  });
+}
+
+// ═══════════════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════════════
 async function init() {
   connectWS();
   renderScenarioList();
   selectScenario('normal-delegation');
-  await Promise.all([loadAgents(), refreshMetrics(), loadAuditLogs()]);
+  await Promise.all([loadAgents(), refreshMetrics(), loadAuditLogs(), loadDashboard()]);
   setInterval(refreshMetrics, 8000);
   setInterval(loadAuditLogs, 15000);
   setInterval(loadAgents, 20000);
+  setInterval(loadDashboard, 30000);
   setTimeout(drawCanvas, 100);
 }
 init();

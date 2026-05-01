@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import uuid
 import hashlib
@@ -13,8 +14,12 @@ class TokenManager:
 
     TOKEN_VERSION = "1.0"
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, key_dir: str = None):
         self.db_path = db_path
+        if key_dir is None:
+            key_dir = os.path.join(os.path.dirname(db_path), "keys")
+        self.key_dir = key_dir
+        os.makedirs(key_dir, exist_ok=True)
         self._init_db()
         self._ensure_rsa_key()
 
@@ -64,11 +69,38 @@ class TokenManager:
         conn.close()
 
     def _ensure_rsa_key(self):
+        priv_path = os.path.join(self.key_dir, "token_private.pem")
+        pub_path = os.path.join(self.key_dir, "token_public.pem")
+        if os.path.exists(priv_path) and os.path.exists(pub_path):
+            try:
+                with open(priv_path, "rb") as f:
+                    self.private_key = serialization.load_pem_private_key(f.read(), password=None)
+                with open(pub_path, "rb") as f:
+                    self.public_key = serialization.load_pem_public_key(f.read())
+                return
+            except Exception:
+                pass
         self.private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
         )
         self.public_key = self.private_key.public_key()
+        try:
+            priv_pem = self.private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            pub_pem = self.public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            with open(priv_path, "wb") as f:
+                f.write(priv_pem)
+            with open(pub_path, "wb") as f:
+                f.write(pub_pem)
+        except Exception:
+            pass
 
     def sign_token(self, payload: dict) -> str:
         now = time.time()
@@ -303,3 +335,47 @@ class TokenManager:
         ).fetchone()
         conn.close()
         return dict(row) if row else None
+
+    def cleanup_expired(self, max_age_days: int = 7) -> dict:
+        now = time.time()
+        cutoff = now - (max_age_days * 86400)
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM tokens WHERE (is_revoked = 1 OR expires_at < ?) AND created_at < ?",
+            (now, cutoff),
+        )
+        conn.commit()
+        deleted = cursor.rowcount
+        conn.close()
+        return {"deleted": deleted, "cutoff_days": max_age_days}
+
+    def refresh_token(self, jti: str, ttl_seconds: int = 3600) -> dict:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM tokens WHERE jti = ? AND is_revoked = 0", (jti,)).fetchone()
+        if not row:
+            conn.close()
+            return {"refreshed": False, "error": "Token not found or revoked"}
+        token = dict(row)
+        new_expires = time.time() + ttl_seconds
+        conn.execute(
+            "UPDATE tokens SET expires_at = ? WHERE jti = ?",
+            (new_expires, jti),
+        )
+        conn.commit()
+        conn.close()
+        return {"refreshed": True, "jti": jti, "new_expires_at": new_expires}
+
+    def get_agent_tokens(self, agent_id: str, active_only: bool = True) -> list:
+        conn = self._get_conn()
+        if active_only:
+            rows = conn.execute(
+                "SELECT * FROM tokens WHERE agent_id = ? AND is_revoked = 0 AND expires_at > ? ORDER BY issued_at DESC",
+                (agent_id, time.time()),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tokens WHERE agent_id = ? ORDER BY issued_at DESC LIMIT 50",
+                (agent_id,),
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]

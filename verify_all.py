@@ -75,7 +75,7 @@ resp = requests.post(f"{API}/tokens/verify", json={
     "verifier_secret": data["client_secret"],
 })
 test("Forged token returns 403", resp.status_code == 403)
-test("Error is ERR_TOKEN_INVALID", "ERR_TOKEN_INVALID" in resp.json().get("detail", ""))
+test("Error is ERR_IDENTITY_UNVERIFIABLE", "ERR_IDENTITY_UNVERIFIABLE" in resp.json().get("detail", ""))
 
 print("\n[6] Token Revocation")
 resp = requests.post(f"{API}/tokens/revoke", json={"jti": token["jti"]})

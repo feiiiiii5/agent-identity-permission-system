@@ -5,6 +5,7 @@ import time
 import uuid
 import asyncio
 import hashlib
+import logging
 from pathlib import Path
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -12,15 +13,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+logger = logging.getLogger(__name__)
+
 from core.auth_server import AuthServer
 from core.injection_scanner import InjectionScanner
+from core.monitor import SystemMonitor
+from core.intent_router import IntentRouter
 from feishu.client import FeishuClient
 from feishu.document import FeishuDocument
 from feishu.bitable import FeishuBitable
 from feishu.contact import FeishuContact
+from feishu.bot import FeishuBot
 from agents.doc_agent import DocAgent
 from agents.data_agent import DataAgent
 from agents.search_agent import SearchAgent
+from agents.agent_adapter import create_default_adapters
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
@@ -33,10 +40,14 @@ REPORTS_DIR.mkdir(exist_ok=True)
 
 auth_server = AuthServer(DB_PATH)
 injection_scanner = InjectionScanner()
+system_monitor = SystemMonitor(DB_PATH)
+intent_router = IntentRouter()
+adapter_manager = create_default_adapters()
 feishu_doc = FeishuDocument()
 feishu_bitable = FeishuBitable()
 feishu_contact = FeishuContact()
 feishu_client = FeishuClient()
+feishu_bot = FeishuBot()
 
 doc_agent = DocAgent()
 data_agent = DataAgent()
@@ -58,6 +69,9 @@ def ws_broadcast(event_type: str, data: dict):
 
 
 auth_server.set_ws_notify(ws_broadcast)
+feishu_bot.set_auth_server(auth_server)
+feishu_bot.set_injection_scanner(injection_scanner)
+feishu_bot.set_intent_router(intent_router)
 
 
 @asynccontextmanager
@@ -385,6 +399,88 @@ async def system_timeline(limit: int = 100):
     return auth_server.get_global_timeline(limit)
 
 
+@app.get("/api/compliance/report")
+async def compliance_report():
+    return auth_server.get_compliance_report()
+
+
+@app.get("/api/incidents")
+async def list_incidents(agent_id: str = None, limit: int = 50):
+    return {"incidents": auth_server.get_incidents(agent_id, limit)}
+
+
+@app.get("/api/incidents/stats")
+async def incident_stats():
+    return auth_server.get_incident_stats()
+
+
+@app.post("/api/incidents/{incident_id}/resolve")
+async def resolve_incident(incident_id: int):
+    return auth_server.resolve_incident(incident_id)
+
+
+@app.get("/api/agents/{agent_id}/card")
+async def agent_card(agent_id: str):
+    agent = auth_server._get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    svid = auth_server.svid_manager.get_svid(agent_id)
+    risk = auth_server.risk_scorer.compute_risk_score(agent_id, agent["capabilities"])
+    return {
+        "agent_id": agent["agent_id"],
+        "agent_name": agent["agent_name"],
+        "agent_type": agent["agent_type"],
+        "spiffe_id": svid.spiffe_id if svid else "",
+        "capabilities": agent["capabilities"],
+        "trust_score": agent["trust_score"],
+        "risk_score": risk["risk_score"],
+        "risk_action": risk["action_taken"],
+        "status": agent["status"],
+        "svid_valid": svid is not None and svid.expires_at > time.time() if svid else False,
+        "risk_dimensions": risk.get("dimensions", {}),
+    }
+
+
+@app.get("/.well-known/agent-card")
+async def well_known_agent_card():
+    agents = auth_server.list_agents()
+    cards = []
+    for agent in agents:
+        svid = auth_server.svid_manager.get_svid(agent["agent_id"])
+        risk = auth_server.risk_scorer.compute_risk_score(agent["agent_id"], agent["capabilities"])
+        cards.append({
+            "agent_id": agent["agent_id"],
+            "agent_name": agent["agent_name"],
+            "agent_type": agent["agent_type"],
+            "spiffe_id": svid.spiffe_id if svid else "",
+            "capabilities": agent["capabilities"],
+            "trust_score": agent["trust_score"],
+            "risk_score": risk["risk_score"],
+            "status": agent["status"],
+        })
+    return {"version": "1.0", "agents": cards}
+
+
+@app.post("/api/tokens/refresh")
+async def refresh_token(request: dict):
+    jti = request.get("jti", "")
+    ttl = request.get("ttl_seconds", 3600)
+    result = auth_server.token_manager.refresh_token(jti, ttl)
+    if not result.get("refreshed"):
+        raise HTTPException(status_code=404, detail=result.get("error", "Token not found"))
+    return result
+
+
+@app.post("/api/system/cleanup")
+async def system_cleanup():
+    return auth_server.cleanup_expired_data()
+
+
+@app.get("/api/behavior/{agent_id}")
+async def behavior_baseline(agent_id: str):
+    return auth_server.behavior_analyzer.get_baseline_data(agent_id)
+
+
 @app.post("/api/demo/normal-delegation")
 async def demo_normal_delegation():
     import traceback
@@ -445,7 +541,7 @@ async def demo_normal_delegation():
             ws_broadcast("demo_step", step5)
             await asyncio.sleep(0.5)
 
-            bitable_data = feishu_bitable.read_bitable("demo_app_token", "demo_table_id")
+            bitable_data = feishu_bitable.read_bitable("JFdHbUqILaTXL9sqGfjcH3vEndd", "tblUSkajxtsxysB6")
             mode_label = "(Demo模式)" if bitable_data.get("mode") == "demo" else ""
             step6 = {"step": 6, "action": "feishu_api", "description": f"DataAgent调用飞书API返回数据{mode_label}", "data": bitable_data, "trace_id": trace_id}
             steps.append(step6)
@@ -817,30 +913,211 @@ AgentPass v2.0.0 | 生成于 {now.strftime("%Y-%m-%d %H:%M:%S")} | 审计链记�
     }
 
 
-async def _background_tasks():
-    tick = 0
-    while True:
-        await asyncio.sleep(10)
-        tick += 1
+@app.get("/api/system/health")
+async def system_health():
+    return system_monitor.get_system_health(auth_server)
+
+
+@app.post("/api/intent/route")
+async def route_intent(request: dict):
+    user_input = request.get("text", "")
+    scan_result = injection_scanner.scan(user_input)
+    if scan_result["is_injection"]:
+        return {
+            "routed": False,
+            "intent": "injection_blocked",
+            "error": "检测到潜在注入攻击，指令已被拦截",
+            "error_code": "PROMPT_INJECTION_BLOCKED",
+            "scan_result": scan_result,
+        }
+    route_result = intent_router.route(user_input)
+    if route_result.get("routed"):
+        workflow = route_result.get("workflow", "")
+        demo_map = {
+            "doc_delegate_data": "normal-delegation",
+            "data_direct": "normal-delegation",
+            "search_direct": "normal-delegation",
+            "doc_delegate_both": "normal-delegation",
+            "data_contact": "human-approval",
+        }
+        demo_endpoint = demo_map.get(workflow)
+        if demo_endpoint:
+            try:
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(f"http://127.0.0.1:8000/api/demo/{demo_endpoint}", timeout=30)
+                    demo_result = resp.json()
+                    route_result["demo_triggered"] = True
+                    route_result["demo_scenario"] = demo_endpoint
+                    route_result["steps"] = demo_result.get("steps", [])
+                    route_result["trace_id"] = demo_result.get("trace_id", "")
+            except Exception:
+                route_result["demo_triggered"] = False
+    return route_result
+
+
+@app.get("/api/adapters")
+async def list_adapters():
+    return {
+        "adapters": adapter_manager.list_adapters(),
+        "engine_types": adapter_manager.get_engine_types(),
+        "health": adapter_manager.health_check_all(),
+    }
+
+
+@app.post("/api/feishu/webhook")
+async def feishu_webhook(request: dict):
+    timestamp = request.get("header", {}).get("timestamp", "")
+    nonce = request.get("header", {}).get("nonce", "")
+    signature = request.get("header", {}).get("signature", "")
+    body_str = json.dumps(request, separators=(",", ":"), ensure_ascii=False)
+
+    if feishu_bot.encrypt_key and not feishu_bot.verify_request(timestamp, nonce, body_str, signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    result = feishu_bot.handle_event(request)
+
+    if "challenge" in result:
+        return result
+
+    return JSONResponse(content=result)
+
+
+@app.post("/api/feishu/test-message")
+async def feishu_test_message(request: dict):
+    chat_id = request.get("chat_id", "")
+    user_id = request.get("user_id", "")
+    text = request.get("text", "Hello from AgentPass!")
+
+    if not chat_id and not user_id:
+        raise HTTPException(status_code=400, detail="chat_id or user_id is required")
+
+    result = feishu_bot.send_message(chat_id=chat_id, user_id=user_id, text=text)
+    return result
+
+
+@app.post("/api/feishu/bot-command")
+async def feishu_bot_command(request: dict):
+    command = request.get("command", "help")
+    user_id = request.get("user_id", "")
+    chat_id = request.get("chat_id", "")
+
+    response_text = feishu_bot._process_command(command, user_id, chat_id, "")
+    return {"response": response_text, "command": command}
+
+
+@app.get("/api/feishu/bot-status")
+async def feishu_bot_status():
+    return {
+        "bot_configured": feishu_bot._cli_configured or bool(feishu_bot.app_id),
+        "cli_available": feishu_bot._cli_available,
+        "cli_configured": feishu_bot._cli_configured,
+        "app_id": feishu_bot.app_id,
+        "verification_token_set": bool(feishu_bot.verification_token),
+        "polling_active": feishu_bot._polling_active,
+        "poll_chat_ids": feishu_bot._poll_chat_ids if hasattr(feishu_bot, '_poll_chat_ids') else [],
+        "processed_messages": len(feishu_bot._processed_messages),
+        "commands": list(feishu_bot._command_handlers.keys()),
+    }
+
+
+@app.post("/api/feishu/start-polling")
+async def feishu_start_polling(request: dict = None):
+    chat_ids = (request or {}).get("chat_ids", [])
+    interval = (request or {}).get("interval", 3.0)
+
+    if not feishu_bot._cli_configured:
+        raise HTTPException(status_code=400, detail="lark-cli not configured. Run: lark-cli config set --appId YOUR_ID --appSecret YOUR_SECRET")
+
+    if not chat_ids:
         try:
-            auth_server.check_approval_timeouts()
+            result = feishu_bot._cli_call(
+                ["im", "+chat-search", "--query", "", "--page-size", "20"],
+                use_json_format=False,
+            )
+            if isinstance(result, dict) and "error" not in result:
+                chats = result.get("chats", result.get("items", []))
+                if isinstance(chats, list):
+                    chat_ids = [c.get("chat_id", "") for c in chats if c.get("chat_id")]
         except Exception:
             pass
+
+    if not chat_ids:
+        raise HTTPException(status_code=400, detail="No chat IDs found. Send a message to the bot first, then start polling.")
+
+    success = feishu_bot.start_polling(chat_ids=chat_ids, interval=interval)
+    return {
+        "status": "polling_started" if success else "failed",
+        "chat_ids": chat_ids,
+        "interval": interval,
+        "message": f"Bot is now polling {len(chat_ids)} chat(s) every {interval}s",
+    }
+
+
+@app.post("/api/feishu/stop-polling")
+async def feishu_stop_polling():
+    feishu_bot.stop_polling()
+    return {"status": "polling_stopped"}
+
+
+async def _background_tasks():
+    await asyncio.sleep(2)
+    try:
+        if feishu_bot._cli_configured:
+            feishu_bot.auto_start_polling()
+            logger.info(f"Feishu Bot auto-polling: active={feishu_bot._polling_active}, chats={len(feishu_bot._poll_chat_ids)}, p2p={feishu_bot._p2p_chat_id}")
+        else:
+            logger.warning("Feishu Bot: lark-cli not configured, polling not started")
+    except Exception as e:
+        logger.warning(f"Feishu Bot auto-start failed: {e}")
+
+    tick = 0
+    while True:
+        await asyncio.sleep(2.0)
+        tick += 1
         try:
-            if tick % 3 == 0:
+            if feishu_bot._polling_active:
+                await feishu_bot.poll_messages()
+        except Exception as e:
+            logger.debug(f"Poll cycle error: {e}")
+        if tick % 7 == 0:
+            try:
+                auth_server.check_approval_timeouts()
+            except Exception:
+                pass
+            try:
                 agents = auth_server.list_agents()
                 for agent in agents:
                     risk = auth_server.risk_scorer.compute_risk_score(
                         agent["agent_id"], agent["capabilities"]
                     )
-        except Exception:
-            pass
+                    if risk["risk_score"] >= 90:
+                        try:
+                            result = auth_server.token_manager.revoke_all_agent_tokens(agent["agent_id"])
+                            if result["revoked_count"] > 0:
+                                ws_broadcast("token_revoked_by_risk", {
+                                    "agent_id": agent["agent_id"],
+                                    "risk_score": risk["risk_score"],
+                                    "revoked_count": result["revoked_count"],
+                                    "action": "frozen",
+                                })
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
     import uvicorn
     import signal
     import subprocess
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logging.getLogger("feishu.bot").setLevel(logging.DEBUG)
 
     PORT = 8000
 
@@ -862,4 +1139,10 @@ if __name__ == "__main__":
             pass
 
     kill_port(PORT)
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+    print(f"\n{'='*60}")
+    print(f"  🤖 AgentPass - AI Agent身份与权限管理系统")
+    print(f"  📡 飞书Bot已启动，请在飞书中给Bot发消息测试")
+    print(f"  🌐 前端界面: http://127.0.0.1:{PORT}")
+    print(f"  📋 Bot状态: http://127.0.0.1:{PORT}/api/feishu/bot-status")
+    print(f"{'='*60}\n")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")

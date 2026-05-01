@@ -12,11 +12,11 @@ class TestPolicyEngine:
         from core.policy_engine import PolicyEngine
         self.engine = PolicyEngine("policies/")
 
-    def test_evaluate_no_policies_default_allow(self):
+    def test_evaluate_no_policies_default_deny(self):
         from core.policy_engine import PolicyEngine
         e = PolicyEngine("/nonexistent/")
         result = e.evaluate("agent_test", "lark:doc:read", "feishu_internal")
-        assert result.allowed is True
+        assert result.allowed is False
 
     def test_policy_reload(self):
         result = self.engine.reload_policies()

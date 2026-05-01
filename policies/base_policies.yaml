@@ -1,4 +1,12 @@
 policies:
+  - name: allow_registered_capabilities
+    description: "允许Agent使用其注册范围内的能力"
+    subjects: ["*"]
+    actions: ["*"]
+    resources: ["*"]
+    effect: allow
+    priority: 50
+
   - name: doc_agent_read_only_after_hours
     description: "DocAgent 非工作时间只允许只读操作"
     subjects: ["agent_doc_001"]

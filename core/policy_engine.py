@@ -166,6 +166,51 @@ class PolicyEngine:
                 trace.append({"step": "condition_max_daily_calls", "result": "pass",
                               "detail": f"daily_calls={daily_calls} < {cond_val}"})
 
+            elif cond_key == "ip_whitelist":
+                client_ip = context.get("client_ip", "")
+                allowed_ips = cond_val if isinstance(cond_val, list) else [cond_val]
+                if client_ip and client_ip not in allowed_ips:
+                    trace.append({"step": "condition_ip_whitelist", "result": "fail",
+                                  "detail": f"ip={client_ip} not in whitelist"})
+                    return False
+                trace.append({"step": "condition_ip_whitelist", "result": "pass"})
+
+            elif cond_key == "max_attenuation_level":
+                att = context.get("attenuation_level", 0)
+                if att > cond_val:
+                    trace.append({"step": "condition_max_attenuation_level", "result": "fail",
+                                  "detail": f"attenuation_level={att} > {cond_val}"})
+                    return False
+                trace.append({"step": "condition_max_attenuation_level", "result": "pass"})
+
+            elif cond_key == "required_capabilities":
+                agent_caps = set(context.get("agent_capabilities", []))
+                required = set(cond_val) if isinstance(cond_val, list) else {cond_val}
+                if not required.issubset(agent_caps):
+                    missing = required - agent_caps
+                    trace.append({"step": "condition_required_capabilities", "result": "fail",
+                                  "detail": f"missing capabilities: {missing}"})
+                    return False
+                trace.append({"step": "condition_required_capabilities", "result": "pass"})
+
+            elif cond_key == "circuit_breaker_open":
+                cb_open = context.get("circuit_breaker_open", False)
+                if cond_val and cb_open:
+                    trace.append({"step": "condition_circuit_breaker_open", "result": "fail",
+                                  "detail": "circuit breaker is open for this agent"})
+                    return False
+                trace.append({"step": "condition_circuit_breaker_open", "result": "pass"})
+
+            elif cond_key == "day_of_week":
+                import calendar
+                day_name = calendar.day_name[time.localtime().tm_wday]
+                allowed_days = cond_val if isinstance(cond_val, list) else [cond_val]
+                if day_name not in allowed_days:
+                    trace.append({"step": "condition_day_of_week", "result": "fail",
+                                  "detail": f"today={day_name} not in {allowed_days}"})
+                    return False
+                trace.append({"step": "condition_day_of_week", "result": "pass"})
+
         trace.append({"step": "check_conditions", "result": "pass"})
         return True
 
@@ -255,9 +300,9 @@ class PolicyEngine:
             )
 
         return PolicyDecision(
-            allowed=True,
-            matched_policy="default_allow",
-            reason="No matching deny policy; default allow",
+            allowed=False,
+            matched_policy="default_deny",
+            reason="No matching allow policy; default deny",
             applicable_policies=applicable,
             evaluation_trace=trace,
         )
