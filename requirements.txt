@@ -1,6 +1,5 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-PyJWT[crypto]==2.8.0
-cryptography==41.0.7
-httpx==0.25.2
-SQLAlchemy==2.0.23
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pyjwt>=2.8.0
+cryptography>=41.0.0
+httpx>=0.25.0

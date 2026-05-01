@@ -1,20 +1,15 @@
 #!/bin/bash
 set -e
+cd "$(dirname "$0")"
 
-echo "=== AgentPass 启动脚本 ==="
-
-if [ ! -d "data" ]; then
-    mkdir -p data
+if [ ! -d "venv" ]; then
+    python3 -m venv venv
 fi
-
-if [ ! -d "reports" ]; then
-    mkdir -p reports
-fi
+source venv/bin/activate
+pip install -r requirements.txt -q
 
 if [ -f ".env" ]; then
-    echo "加载 .env 配置..."
     export $(grep -v '^#' .env | xargs)
 fi
 
-echo "启动 AgentPass 服务..."
-python3 main.py
+python main.py

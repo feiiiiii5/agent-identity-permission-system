@@ -20,6 +20,7 @@ class AuditLogger:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -103,6 +104,28 @@ class AuditLogger:
             CREATE INDEX IF NOT EXISTS idx_audit_trace ON audit_logs(trace_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_ack ON security_alerts(acknowledged);
             CREATE INDEX IF NOT EXISTS idx_risk_agent ON risk_events(agent_id);
+
+            CREATE TABLE IF NOT EXISTS policy_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                subject_id TEXT DEFAULT '',
+                action TEXT DEFAULT '',
+                resource TEXT DEFAULT '',
+                matched_policy TEXT DEFAULT '',
+                effect TEXT DEFAULT '',
+                reason TEXT DEFAULT '',
+                evaluation_trace TEXT DEFAULT '[]',
+                context TEXT DEFAULT '{}'
+            );
+
+            CREATE TABLE IF NOT EXISTS svid_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                agent_id TEXT NOT NULL,
+                event_type TEXT DEFAULT '',
+                spiffe_id TEXT DEFAULT '',
+                expires_at REAL DEFAULT 0
+            );
         """)
         conn.commit()
         conn.close()
@@ -592,3 +615,198 @@ class AuditLogger:
                 "unacknowledged_alerts": unack_alerts,
             },
         }
+
+    def write_policy_decision(
+        self,
+        subject_id: str,
+        action: str,
+        resource: str,
+        matched_policy: str,
+        effect: str,
+        reason: str,
+        evaluation_trace: list,
+        context: dict,
+    ) -> dict:
+        now = time.time()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO policy_decisions
+                (timestamp, subject_id, action, resource, matched_policy, effect, reason, evaluation_trace, context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now, subject_id, action, resource, matched_policy, effect, reason,
+                 json.dumps(evaluation_trace), json.dumps(context)),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()
+        return {"timestamp": now, "subject_id": subject_id, "effect": effect}
+
+    def get_policy_decisions(self, limit: int = 50) -> list:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM policy_decisions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        results = []
+        for row in rows:
+            r = dict(row)
+            try:
+                r["evaluation_trace"] = json.loads(r.get("evaluation_trace", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                r["evaluation_trace"] = []
+            try:
+                r["context"] = json.loads(r.get("context", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                r["context"] = {}
+            results.append(r)
+        return results
+
+    def write_svid_event(
+        self, agent_id: str, event_type: str, spiffe_id: str, expires_at: float
+    ) -> dict:
+        now = time.time()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO svid_events (timestamp, agent_id, event_type, spiffe_id, expires_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (now, agent_id, event_type, spiffe_id, expires_at),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()
+        return {"timestamp": now, "agent_id": agent_id, "event_type": event_type}
+
+    def get_threat_summary(self) -> dict:
+        conn = self._get_conn()
+        now = time.time()
+        day_ago = now - 86400
+
+        injection_events = [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_logs WHERE injection_detected = 1 AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+            (day_ago,),
+        ).fetchall()]
+
+        privilege_events = [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_logs WHERE privilege_escalation_detected = 1 AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+            (day_ago,),
+        ).fetchall()]
+
+        token_theft_events = [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_logs WHERE error_code = 'ERR_IDENTITY_UNVERIFIABLE' AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+            (day_ago,),
+        ).fetchall()]
+
+        rate_limit_events = [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_logs WHERE error_code = 'ERR_RATE_LIMITED' AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+            (day_ago,),
+        ).fetchall()]
+
+        circuit_breaker_events = [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_logs WHERE action_type = 'circuit_breaker_open' AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+            (day_ago,),
+        ).fetchall()]
+
+        total_threats_24h = (
+            len(injection_events) + len(privilege_events) +
+            len(token_theft_events) + len(rate_limit_events) +
+            len(circuit_breaker_events)
+        )
+
+        critical_count = len(privilege_events) + len(token_theft_events)
+        high_count = len(injection_events) + len(rate_limit_events)
+
+        conn.close()
+
+        return {
+            "injection_events": injection_events,
+            "privilege_escalation_events": privilege_events,
+            "token_theft_events": token_theft_events,
+            "rate_limit_events": rate_limit_events,
+            "circuit_breaker_events": circuit_breaker_events,
+            "summary": {
+                "total_threats_24h": total_threats_24h,
+                "critical_count": critical_count,
+                "high_count": high_count,
+            },
+        }
+
+    def get_global_timeline(self, limit: int = 100) -> list:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, timestamp, action_type, requesting_agent, target_agent, decision, error_code, trace_id, risk_score FROM audit_logs ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        events = []
+        for row in rows:
+            r = dict(row)
+            r["source"] = "audit"
+            events.append(r)
+
+        pd_rows = conn.execute(
+            "SELECT id, timestamp, subject_id, action, effect, matched_policy FROM policy_decisions ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        for row in pd_rows:
+            r = dict(row)
+            r["source"] = "policy"
+            r["requesting_agent"] = r.pop("subject_id", "")
+            r["decision"] = r.pop("effect", "")
+            events.append(r)
+
+        svid_rows = conn.execute(
+            "SELECT id, timestamp, agent_id, event_type, spiffe_id FROM svid_events ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        for row in svid_rows:
+            r = dict(row)
+            r["source"] = "svid"
+            r["action_type"] = r.pop("event_type", "")
+            r["requesting_agent"] = r.pop("agent_id", "")
+            events.append(r)
+
+        conn.close()
+
+        events.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        return events[:limit]
+
+    def get_capabilities_matrix(self, agents: list) -> dict:
+        all_caps = set()
+        agent_caps = {}
+        for agent in agents:
+            caps = agent.get("capabilities", [])
+            agent_caps[agent["agent_id"]] = caps
+            for c in caps:
+                all_caps.add(c)
+
+        sorted_caps = sorted(list(all_caps))
+        sorted_agents = [a["agent_id"] for a in agents]
+
+        matrix = []
+        for aid in sorted_agents:
+            row = []
+            for cap in sorted_caps:
+                row.append(cap in agent_caps.get(aid, []))
+            matrix.append(row)
+
+        return {
+            "agents": sorted_agents,
+            "capabilities": sorted_caps,
+            "matrix": matrix,
+        }
+
+    def acknowledge_alert(self, alert_id: int) -> dict:
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE security_alerts SET acknowledged = 1 WHERE id = ?",
+            (alert_id,),
+        )
+        conn.commit()
+        conn.close()
+        return {"alert_id": alert_id, "acknowledged": True}

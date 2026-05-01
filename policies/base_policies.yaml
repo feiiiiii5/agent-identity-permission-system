@@ -1,0 +1,48 @@
+policies:
+  - name: doc_agent_read_only_after_hours
+    description: "DocAgent 非工作时间只允许只读操作"
+    subjects: ["agent_doc_001"]
+    actions: ["lark:doc:write", "lark:bitable:write"]
+    resources: ["*"]
+    effect: deny
+    conditions:
+      time_range_outside: {"from": "09:00", "to": "18:00"}
+    priority: 100
+
+  - name: search_agent_no_feishu
+    description: "SearchAgent 永远不能访问飞书内部数据"
+    subjects: ["agent_search_001"]
+    actions: ["lark:*"]
+    resources: ["feishu_internal"]
+    effect: deny
+    priority: 200
+
+  - name: high_risk_readonly
+    description: "风险分 >= 70 降级为只读"
+    subjects: ["*"]
+    actions: ["*:write", "*:delete"]
+    resources: ["*"]
+    effect: deny
+    conditions:
+      min_risk_score: 70
+    priority: 150
+
+  - name: max_delegation_depth
+    description: "委托链深度不超过3层"
+    subjects: ["*"]
+    actions: ["delegate:*"]
+    resources: ["*"]
+    effect: deny
+    conditions:
+      min_attenuation_level: 3
+    priority: 300
+
+  - name: require_delegated_user_for_sensitive
+    description: "敏感操作必须有委托用户上下文"
+    subjects: ["*"]
+    actions: ["lark:contact:read", "lark:bitable:write"]
+    resources: ["*"]
+    effect: deny
+    conditions:
+      missing_delegated_user: true
+    priority: 120

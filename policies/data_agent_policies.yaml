@@ -1,0 +1,16 @@
+policies:
+  - name: data_agent_allow_doc_delegation
+    description: "DataAgent 允许来自 DocAgent 的委托"
+    subjects: ["agent_doc_001"]
+    actions: ["lark:bitable:read", "lark:contact:read", "lark:calendar:read"]
+    resources: ["feishu_internal"]
+    effect: allow
+    priority: 50
+
+  - name: data_agent_block_external_delegation
+    description: "DataAgent 拒绝来自 SearchAgent 的所有飞书访问委托"
+    subjects: ["agent_search_001"]
+    actions: ["lark:*"]
+    resources: ["feishu_internal"]
+    effect: deny
+    priority: 500

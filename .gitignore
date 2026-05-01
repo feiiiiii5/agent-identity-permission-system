@@ -40,3 +40,4 @@ Thumbs.db
 .pids
 data/
 config/credentials.json
+reports/

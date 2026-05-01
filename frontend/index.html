@@ -3,486 +3,968 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgentPass - AI Agent Identity & Access Management</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<title>AgentPass — AI Agent Identity & Access Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap');
-:root {
-  --bg-void: #050810; --bg-base: #0a0f1e; --bg-surface: #0f1629; --bg-elevated: #151d35;
-  --bg-glass: rgba(15,22,41,0.75); --border-subtle: rgba(56,189,248,0.08);
-  --border-default: rgba(56,189,248,0.15); --border-strong: rgba(56,189,248,0.3);
-  --text-bright: #f0f4ff; --text-primary: #c8d6f0; --text-secondary: #7b8db5;
-  --text-muted: #4a5a80; --neon-blue: #38bdf8; --neon-cyan: #22d3ee;
-  --neon-green: #34d399; --neon-red: #f87171; --neon-amber: #fbbf24;
-  --neon-purple: #a78bfa; --neon-pink: #f472b6;
-  --glow-blue: 0 0 20px rgba(56,189,248,0.3); --glow-green: 0 0 20px rgba(52,211,153,0.3);
-  --glow-red: 0 0 20px rgba(248,113,113,0.3); --glow-amber: 0 0 20px rgba(251,191,36,0.3);
-  --radius: 10px; --radius-lg: 16px;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-  --font-sans: 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+--bg:#09090b;--surface:#111113;--surface2:#18181b;--surface3:#1f1f23;
+--border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.10);
+--tx:#fafafa;--tx2:#a1a1aa;--tx3:#71717a;--tx4:#3f3f46;
+--blue:#3b82f6;--blue-dim:rgba(59,130,246,0.12);
+--green:#22c55e;--green-dim:rgba(34,197,94,0.12);
+--red:#ef4444;--red-dim:rgba(239,68,68,0.12);
+--orange:#f59e0b;--orange-dim:rgba(245,158,11,0.12);
+--purple:#a855f7;--purple-dim:rgba(168,85,247,0.12);
+--cyan:#06b6d4;--cyan-dim:rgba(6,182,212,0.12);
+--radius:12px;--radius-sm:8px;--radius-xs:4px;
+--font:'Instrument Sans','Noto Sans SC',-apple-system,sans-serif;
+--mono:'IBM Plex Mono','SF Mono',monospace;
+--ease:cubic-bezier(0.16,1,0.3,1);
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: var(--font-sans); background: var(--bg-void); color: var(--text-primary); min-height: 100vh; overflow-x: hidden; }
-::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg-base); }
-::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
-.demo-banner { background: linear-gradient(90deg, #f59e0b, #d97706); color: #000; text-align: center; padding: 6px 0; font-weight: 600; font-size: 13px; letter-spacing: 0.5px; }
-.status-bar { background: var(--bg-surface); border-bottom: 1px solid var(--border-default); padding: 10px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-.status-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.status-dot.green { background: var(--neon-green); box-shadow: var(--glow-green); }
-.status-dot.red { background: var(--neon-red); box-shadow: var(--glow-red); }
-.status-dot.amber { background: var(--neon-amber); box-shadow: var(--glow-amber); }
-.status-value { color: var(--text-bright); font-family: var(--font-mono); font-weight: 600; }
-.main-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto auto auto; gap: 16px; padding: 16px 24px; max-width: 1600px; margin: 0 auto; }
-.panel { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: hidden; }
-.panel-header { padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--text-bright); }
-.panel-header .icon { width: 18px; height: 18px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; }
-.panel-body { padding: 16px; }
-.canvas-panel { grid-column: 1 / -1; }
-.canvas-panel canvas { width: 100%; height: 280px; display: block; border-radius: 8px; }
-.token-panel .panel-body { max-height: 400px; overflow-y: auto; }
-.json-view { font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
-.json-key { color: var(--neon-cyan); } .json-string { color: var(--neon-green); }
-.json-number { color: var(--neon-amber); } .json-bool { color: var(--neon-purple); }
-.json-null { color: var(--text-muted); } .json-bracket { color: var(--text-secondary); }
-.audit-panel { grid-column: 1 / -1; }
-.audit-flow { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-.audit-entry { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border-radius: 8px; font-size: 12px; cursor: pointer; transition: background 0.2s; border-left: 3px solid transparent; }
-.audit-entry:hover { background: var(--bg-elevated); }
-.audit-entry.allow { border-left-color: var(--neon-green); } .audit-entry.deny { border-left-color: var(--neon-red); }
-.audit-entry.alert { border-left-color: var(--neon-amber); }
-.audit-time { color: var(--text-muted); font-family: var(--font-mono); min-width: 65px; }
-.audit-agent { color: var(--neon-blue); min-width: 100px; }
-.audit-action { color: var(--text-primary); flex: 1; }
-.audit-decision { font-weight: 600; min-width: 50px; text-transform: uppercase; font-size: 11px; }
-.audit-decision.allow { color: var(--neon-green); } .audit-decision.deny { color: var(--neon-red); }
-.audit-decision.alert { color: var(--neon-amber); }
-.audit-detail { display: none; padding: 8px 12px; margin-top: 4px; background: var(--bg-elevated); border-radius: 6px; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
-.audit-entry.expanded .audit-detail { display: block; }
-.demo-panel { grid-column: 1 / -1; }
-.demo-buttons { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 16px; }
-.demo-btn { padding: 10px 8px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-elevated); color: var(--text-primary); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.2s; text-align: center; font-family: var(--font-sans); }
-.demo-btn:hover { border-color: var(--neon-blue); box-shadow: var(--glow-blue); color: var(--text-bright); }
-.demo-btn:active { transform: scale(0.97); }
-.demo-btn.active { border-color: var(--neon-cyan); background: rgba(34,211,238,0.1); color: var(--neon-cyan); }
-.demo-steps { display: flex; flex-direction: column; gap: 8px; }
-.demo-step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; background: var(--bg-elevated); border-radius: 8px; border-left: 3px solid var(--border-default); animation: stepIn 0.3s ease; }
-.demo-step.success { border-left-color: var(--neon-green); } .demo-step.error { border-left-color: var(--neon-red); }
-.demo-step.warning { border-left-color: var(--neon-amber); } .demo-step.info { border-left-color: var(--neon-blue); }
-.demo-step-num { background: var(--bg-surface); color: var(--neon-cyan); width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; font-family: var(--font-mono); }
-.demo-step-text { font-size: 13px; color: var(--text-primary); }
-.demo-step-detail { font-size: 11px; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono); }
-.approval-modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(5,8,16,0.85); z-index: 1000; align-items: center; justify-content: center; }
-.approval-modal.show { display: flex; }
-.approval-card { background: var(--bg-surface); border: 2px solid var(--neon-amber); border-radius: var(--radius-lg); padding: 24px; max-width: 420px; width: 90%; box-shadow: 0 0 40px rgba(251,191,36,0.2); }
-.approval-card h3 { color: var(--neon-amber); margin-bottom: 12px; }
-.approval-timer { font-family: var(--font-mono); font-size: 28px; color: var(--neon-red); text-align: center; margin: 12px 0; }
-.approval-btns { display: flex; gap: 12px; margin-top: 16px; }
-.approval-btns button { flex: 1; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; font-family: var(--font-sans); }
-.approval-btns .approve { background: var(--neon-green); color: #000; }
-.approval-btns .reject { background: var(--neon-red); color: #fff; }
-.toast-container { position: fixed; top: 60px; right: 24px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
-.toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; animation: toastIn 0.3s ease; max-width: 360px; }
-.toast.info { background: rgba(56,189,248,0.15); border: 1px solid var(--neon-blue); color: var(--neon-blue); }
-.toast.success { background: rgba(52,211,153,0.15); border: 1px solid var(--neon-green); color: var(--neon-green); }
-.toast.error { background: rgba(248,113,113,0.15); border: 1px solid var(--neon-red); color: var(--neon-red); }
-.toast.warning { background: rgba(251,191,36,0.15); border: 1px solid var(--neon-amber); color: var(--neon-amber); }
-@keyframes stepIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-.pulse { animation: pulse 2s infinite; }
-@media (max-width: 900px) {
-  .main-grid { grid-template-columns: 1fr; padding: 12px; }
-  .canvas-panel, .audit-panel, .demo-panel { grid-column: 1; }
-  .demo-buttons { grid-template-columns: repeat(3, 1fr); }
-}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);font-family:var(--font);-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.06);border-radius:2px}
+
+.root{height:100vh;display:flex;flex-direction:column}
+
+nav{height:48px;flex-shrink:0;display:flex;align-items:center;padding:0 20px;border-bottom:1px solid var(--border);background:var(--surface)}
+nav .brand{font-size:15px;font-weight:700;letter-spacing:-0.03em}
+nav .brand b{color:var(--blue)}
+nav .nav-right{margin-left:auto;display:flex;align-items:center;gap:16px;font-size:11px;color:var(--tx3)}
+nav .status-dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+nav .status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+nav .stat{display:flex;align-items:center;gap:4px}
+nav .stat-val{font-weight:700;color:var(--tx2);font-family:var(--mono);font-size:11px}
+
+.main{flex:1;display:flex;overflow:hidden;min-height:0}
+
+.sidebar{width:280px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface)}
+.sidebar-section{padding:16px}
+.sidebar-section+.sidebar-section{border-top:1px solid var(--border)}
+.sidebar-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--tx3);margin-bottom:10px}
+
+.scenario-list{display:flex;flex-direction:column;gap:4px}
+.scenario-btn{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-sm);cursor:pointer;border:1px solid transparent;background:transparent;color:var(--tx2);font-family:var(--font);font-size:12px;font-weight:500;transition:all 0.2s var(--ease);text-align:left;width:100%}
+.scenario-btn:hover{background:var(--surface2);color:var(--tx)}
+.scenario-btn.active{background:var(--blue-dim);border-color:rgba(59,130,246,0.2);color:var(--blue)}
+.scenario-btn .s-icon{font-size:16px;flex-shrink:0;width:24px;text-align:center}
+.scenario-btn .s-info{flex:1;min-width:0}
+.scenario-btn .s-name{font-weight:600;display:block}
+.scenario-btn .s-desc{font-size:10px;color:var(--tx3);display:block;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scenario-btn.active .s-desc{color:rgba(59,130,246,0.7)}
+
+.agent-card{padding:10px 12px;border-radius:var(--radius-sm);background:var(--surface2);margin-bottom:6px;border:1px solid var(--border)}
+.agent-card .ac-top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.agent-card .ac-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px}
+.agent-card .ac-name{font-size:12px;font-weight:700}
+.agent-card .ac-id{font-size:9px;color:var(--tx4);font-family:var(--mono)}
+.agent-card .ac-caps{display:flex;flex-wrap:wrap;gap:3px}
+.agent-card .ac-cap{font-size:8px;padding:2px 6px;border-radius:100px;font-family:var(--mono);font-weight:500}
+.agent-card .ac-risk{display:flex;align-items:center;gap:4px;margin-top:6px;font-size:9px}
+.agent-card .ac-risk .risk-bar{flex:1;height:3px;background:var(--surface3);border-radius:2px;overflow:hidden}
+.agent-card .ac-risk .risk-fill{height:100%;border-radius:2px;transition:width 0.6s var(--ease)}
+.agent-card .ac-risk .risk-val{font-family:var(--mono);font-weight:600;min-width:20px;text-align:right}
+
+.center{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+.stage{flex:1;position:relative;overflow:hidden;min-height:0}
+.stage-inner{position:absolute;inset:0;display:flex;flex-direction:column}
+
+.stage-header{flex-shrink:0;padding:20px 28px 0;display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.stage-header h1{font-size:20px;font-weight:700;letter-spacing:-0.02em;line-height:1.2}
+.stage-header h1 .hl{color:var(--blue)}
+.stage-header .stage-badge{font-size:10px;padding:4px 10px;border-radius:100px;font-weight:600;flex-shrink:0;margin-top:2px}
+.stage-desc{font-size:12px;color:var(--tx3);margin-top:4px;padding:0 28px;max-width:560px;line-height:1.5}
+
+.flow-area{flex:1;padding:16px 28px;overflow-y:auto;min-height:0}
+.flow-steps{display:flex;flex-direction:column;gap:8px}
+.flow-step{display:flex;gap:12px;align-items:flex-start;opacity:0.3;transform:translateX(-8px);transition:all 0.4s var(--ease)}
+.flow-step.visible{opacity:1;transform:translateX(0)}
+.flow-step.active{opacity:1;transform:translateX(0)}
+.flow-step .step-line{display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:28px}
+.flow-step .step-dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--tx4);background:var(--bg);flex-shrink:0;transition:all 0.3s var(--ease);z-index:1}
+.flow-step.active .step-dot{border-color:var(--blue);background:var(--blue);box-shadow:0 0 12px rgba(59,130,246,0.5)}
+.flow-step.success .step-dot{border-color:var(--green);background:var(--green);box-shadow:0 0 12px rgba(34,197,94,0.5)}
+.flow-step.error .step-dot{border-color:var(--red);background:var(--red);box-shadow:0 0 12px rgba(239,68,68,0.5)}
+.flow-step.warning .step-dot{border-color:var(--orange);background:var(--orange);box-shadow:0 0 12px rgba(245,158,11,0.5)}
+.flow-step .step-connector{width:1px;flex:1;min-height:16px;background:var(--border);transition:background 0.3s}
+.flow-step.success .step-connector{background:rgba(34,197,94,0.3)}
+.flow-step.error .step-connector{background:rgba(239,68,68,0.3)}
+.flow-step .step-content{flex:1;padding-bottom:4px}
+.flow-step .step-title{font-size:12px;font-weight:600;color:var(--tx3);transition:color 0.3s}
+.flow-step.active .step-title{color:var(--tx)}
+.flow-step.success .step-title{color:var(--green)}
+.flow-step.error .step-title{color:var(--red)}
+.flow-step.warning .step-title{color:var(--orange)}
+.flow-step .step-desc{font-size:11px;color:var(--tx4);margin-top:2px;line-height:1.4}
+.flow-step.active .step-desc,.flow-step.success .step-desc,.flow-step.error .step-desc,.flow-step.warning .step-desc{color:var(--tx3)}
+.flow-step .step-detail{margin-top:8px;overflow:hidden;transition:max-height 0.4s var(--ease),opacity 0.3s;max-height:0;opacity:0}
+.flow-step.active .step-detail,.flow-step.success .step-detail,.flow-step.error .step-detail{max-height:600px;opacity:1}
+
+.token-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px}
+.token-card .tc-status{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:3px 8px;border-radius:100px;margin-bottom:8px}
+.token-card .tc-status.issued{background:var(--green-dim);color:var(--green)}
+.token-card .tc-status.blocked{background:var(--red-dim);color:var(--red)}
+.token-card .tc-status.warning{background:var(--orange-dim);color:var(--orange)}
+.token-card .tc-status.stolen{background:var(--purple-dim);color:var(--purple)}
+.jwt-parts{display:flex;gap:4px;margin-bottom:8px}
+.jwt-part{flex:1;padding:6px 8px;border-radius:var(--radius-xs);font-family:var(--mono);font-size:8px}
+.jwt-part.hdr{background:var(--blue-dim);border-left:2px solid var(--blue)}
+.jwt-part.pay{background:var(--green-dim);border-left:2px solid var(--green)}
+.jwt-part.sig{background:var(--purple-dim);border-left:2px solid var(--purple)}
+.jwt-part .jp-label{font-size:7px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:3px}
+.jwt-part.hdr .jp-label{color:var(--blue)}
+.jwt-part.pay .jp-label{color:var(--green)}
+.jwt-part.sig .jp-label{color:var(--purple)}
+.jwt-part .jp-field{display:flex;justify-content:space-between;padding:1px 0;gap:4px}
+.jwt-part .jp-k{color:var(--tx3);flex-shrink:0}
+.jwt-part .jp-v{color:var(--tx);font-weight:500;text-align:right;word-break:break-all}
+.jwt-part .jp-v.cap{color:var(--cyan);font-size:7px}
+.att-row{display:flex;align-items:center;gap:6px;font-size:9px;margin-top:6px}
+.att-row .att-lbl{color:var(--tx3);white-space:nowrap}
+.att-row .att-track{flex:1;height:3px;background:var(--surface3);border-radius:2px;overflow:hidden}
+.att-row .att-fill{height:100%;border-radius:2px;transition:width 0.5s var(--ease)}
+.att-row .att-val{font-family:var(--mono);font-weight:600;min-width:14px;text-align:right}
+
+.scan-result{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px}
+.scan-result .sr-layers{display:flex;gap:6px;margin-bottom:6px}
+.scan-result .sr-layer{flex:1;padding:6px;border-radius:var(--radius-xs);text-align:center;font-size:9px;font-weight:600}
+.scan-result .sr-layer.pass{background:var(--green-dim);color:var(--green)}
+.scan-result .sr-layer.fail{background:var(--red-dim);color:var(--red)}
+.scan-result .sr-threats{font-size:9px;color:var(--tx3);font-family:var(--mono)}
+.scan-result .sr-threat{padding:2px 0;color:var(--red)}
+
+.risk-radar{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px}
+.risk-radar .rr-title{font-size:9px;font-weight:600;color:var(--tx3);margin-bottom:6px}
+.risk-radar .rr-dims{display:flex;flex-direction:column;gap:4px}
+.risk-radar .rr-dim{display:flex;align-items:center;gap:6px;font-size:9px}
+.risk-radar .rr-dim .rd-name{width:60px;color:var(--tx3);flex-shrink:0}
+.risk-radar .rr-dim .rd-bar{flex:1;height:3px;background:var(--surface3);border-radius:2px;overflow:hidden}
+.risk-radar .rr-dim .rd-fill{height:100%;border-radius:2px;transition:width 0.5s var(--ease)}
+.risk-radar .rr-dim .rd-val{font-family:var(--mono);font-weight:500;min-width:24px;text-align:right;color:var(--tx2)}
+
+.error-card{background:var(--red-dim);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-sm);padding:8px 12px;margin-top:4px;font-size:10px}
+.error-card .ec-code{font-family:var(--mono);font-weight:700;color:var(--red);font-size:11px}
+.error-card .ec-msg{color:var(--tx2);margin-top:2px;font-size:10px}
+
+.approval-card{background:var(--orange-dim);border:1px solid rgba(245,158,11,0.2);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px}
+.approval-card .ap-title{font-size:11px;font-weight:600;color:var(--orange)}
+.approval-card .ap-desc{font-size:10px;color:var(--tx2);margin-top:2px}
+.approval-card .ap-btns{display:flex;gap:6px;margin-top:8px}
+
+.toolbar{flex-shrink:0;padding:12px 28px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--surface)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:7px 16px;border-radius:100px;font-size:11px;font-weight:600;cursor:pointer;border:none;transition:all 0.2s var(--ease);font-family:var(--font)}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-primary:hover{background:#2563eb;transform:translateY(-1px)}
+.btn-primary:disabled{opacity:0.4;cursor:not-allowed;transform:none}
+.btn-ghost{background:transparent;color:var(--tx2);border:1px solid var(--border)}
+.btn-ghost:hover{background:var(--surface2);border-color:var(--border2)}
+.btn-ghost:disabled{opacity:0.3;cursor:not-allowed}
+.btn-sm{padding:5px 12px;font-size:10px}
+.btn-xs{padding:3px 8px;font-size:9px}
+.toolbar-right{margin-left:auto;display:flex;gap:6px;align-items:center}
+.progress-bar{flex:1;max-width:200px;height:2px;background:var(--surface3);border-radius:1px;overflow:hidden}
+.progress-fill{height:100%;background:var(--blue);border-radius:1px;transition:width 0.4s var(--ease);width:0%}
+.progress-text{font-size:10px;color:var(--tx3);min-width:100px}
+
+.right-panel{width:320px;flex-shrink:0;border-left:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);overflow:hidden}
+.rp-section{display:flex;flex-direction:column;overflow:hidden}
+.rp-section+.rp-section{border-top:1px solid var(--border)}
+.rp-header{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.rp-header h3{font-size:11px;font-weight:700;letter-spacing:-0.01em}
+.rp-header .rp-tag{font-size:8px;color:var(--tx3);padding:2px 6px;border-radius:100px;background:var(--surface2)}
+.rp-body{flex:1;overflow-y:auto;padding:0 16px 12px;min-height:0}
+
+.chain-canvas-wrap{width:100%;aspect-ratio:16/9;position:relative;border-radius:var(--radius-sm);overflow:hidden;background:var(--surface2)}
+.chain-canvas-wrap canvas{width:100%;height:100%;display:block}
+
+.audit-entry{padding:6px 8px;border-radius:var(--radius-xs);margin-bottom:3px;cursor:pointer;transition:background 0.2s;border-left:2px solid transparent;font-size:9px}
+.audit-entry:hover{background:var(--surface2)}
+.audit-entry.log-allow{border-left-color:var(--green)}
+.audit-entry.log-deny{border-left-color:var(--red)}
+.audit-entry.log-alert{border-left-color:var(--orange)}
+.audit-entry .ae-row{display:flex;align-items:center;gap:5px}
+.audit-entry .ae-decision{font-weight:700;font-size:8px;letter-spacing:0.04em}
+.audit-entry .ae-time{color:var(--tx4);font-family:var(--mono);font-size:8px}
+.audit-entry .ae-agent{color:var(--tx3)}
+.audit-entry .ae-action{color:var(--tx4)}
+.audit-entry .ae-detail{margin-top:3px;padding:4px 6px;background:var(--surface2);border-radius:3px;font-size:8px;font-family:var(--mono);color:var(--tx4);display:none}
+.audit-entry.expanded .ae-detail{display:block}
+
+.metrics-row{display:flex;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.metric{display:flex;align-items:center;gap:4px;font-size:10px}
+.metric .m-val{font-weight:700;font-family:var(--mono);font-size:12px}
+.metric .m-lbl{color:var(--tx3);font-size:9px}
+.metric .m-sep{width:1px;height:12px;background:var(--border);margin:0 4px}
+
+.approval-overlay{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.7);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);display:none;align-items:center;justify-content:center}
+.approval-overlay.show{display:flex}
+.approval-modal{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);padding:28px;max-width:360px;width:90%;text-align:center;transform:scale(0.95);opacity:0;transition:all 0.3s var(--ease)}
+.approval-overlay.show .approval-modal{transform:scale(1);opacity:1}
+.approval-modal .am-icon{font-size:36px;margin-bottom:10px}
+.approval-modal h3{font-size:15px;font-weight:700;margin-bottom:4px}
+.approval-modal p{font-size:11px;color:var(--tx2);margin-bottom:4px}
+.approval-modal .am-timer{font-size:10px;color:var(--orange);font-family:var(--mono);margin-bottom:14px}
+.approval-modal .am-btns{display:flex;gap:8px;justify-content:center}
+
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(60px);padding:8px 20px;border-radius:100px;background:var(--surface2);border:1px solid var(--border2);font-size:11px;color:var(--tx);z-index:3000;transition:transform 0.4s var(--ease);pointer-events:none;white-space:nowrap}
+.toast.show{transform:translateX(-50%) translateY(0)}
+
+.intro-overlay{position:fixed;inset:0;z-index:1500;background:rgba(9,9,11,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:none;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:40px}
+.intro-overlay.show{display:flex}
+.intro-overlay .io-icon{font-size:48px;margin-bottom:12px;animation:ioIn 0.5s var(--ease)}
+@keyframes ioIn{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
+.intro-overlay h2{font-size:28px;font-weight:700;letter-spacing:-0.03em;margin-bottom:6px}
+.intro-overlay p{font-size:13px;color:var(--tx2);max-width:440px;line-height:1.5}
+.intro-overlay .io-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:100px;font-size:10px;font-weight:600;margin-top:12px}
+
+.features-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:0 16px 12px}
+.feat-chip{padding:5px 8px;border-radius:var(--radius-xs);font-size:9px;font-weight:500;background:var(--surface2);color:var(--tx3);display:flex;align-items:center;gap:4px}
+.feat-chip .fc-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition-duration:0.01ms!important}}
 </style>
 </head>
 <body>
 
-<div id="demoBanner" class="demo-banner" style="display:none;">⚠️ 当前为 Demo 模式 — 飞书 API 返回模拟数据</div>
-
-<div class="status-bar" id="statusBar">
-  <div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--neon-cyan);font-size:15px;">
-    <span style="font-size:18px;">🛡️</span> AgentPass
+<div class="root">
+<nav>
+  <div class="brand"><b>Agent</b>Pass</div>
+  <div class="nav-right">
+    <div class="stat"><span class="status-dot on" id="health-dot"></span><span id="health-text">在线</span></div>
+    <div class="stat">Token <span class="stat-val" id="nav-tokens">0</span></div>
+    <div class="stat">拦截 <span class="stat-val" id="nav-deny" style="color:var(--red)">0</span></div>
+    <div class="stat">审计链 <span class="stat-val" id="nav-chain" style="color:var(--green)">✓</span></div>
   </div>
-  <div class="status-item"><span class="status-dot green" id="healthDot"></span> 系统 <span class="status-value" id="healthStatus">--</span></div>
-  <div class="status-item">活跃Token <span class="status-value" id="activeTokens">0</span></div>
-  <div class="status-item">今日拦截 <span class="status-value" style="color:var(--neon-red)" id="denyCount">0</span></div>
-  <div class="status-item"><span class="status-dot" id="chainDot"></span> 审计链 <span class="status-value" id="chainStatus">--</span></div>
-  <div class="status-item"><span class="status-dot" id="wsDot"></span> <span id="wsStatus">WebSocket 连接中...</span></div>
-</div>
+</nav>
 
-<div class="main-grid">
-
-  <div class="panel canvas-panel">
-    <div class="panel-header"><span class="icon" style="background:var(--neon-blue);color:#000;">◈</span> 调用链可视化</div>
-    <div class="panel-body" style="padding:8px;">
-      <canvas id="graphCanvas" width="1200" height="280"></canvas>
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-title">演示场景</div>
+      <div class="scenario-list" id="scenario-list"></div>
     </div>
-  </div>
-
-  <div class="panel token-panel">
-    <div class="panel-header"><span class="icon" style="background:var(--neon-green);color:#000;">◉</span> Token 检视面板</div>
-    <div class="panel-body" id="tokenPanel">
-      <div style="color:var(--text-muted);text-align:center;padding:40px 0;font-size:13px;">等待 Token 签发...</div>
+    <div class="sidebar-section" style="flex:1;overflow-y:auto;min-height:0">
+      <div class="sidebar-title">已注册 Agent</div>
+      <div id="agent-cards"></div>
     </div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-header"><span class="icon" style="background:var(--neon-purple);color:#000;">◎</span> Agent 风险概览</div>
-    <div class="panel-body" id="agentPanel" style="max-height:400px;overflow-y:auto;">
-      <div style="color:var(--text-muted);text-align:center;padding:20px;font-size:13px;">加载中...</div>
-    </div>
-  </div>
-
-  <div class="panel audit-panel">
-    <div class="panel-header"><span class="icon" style="background:var(--neon-amber);color:#000;">▤</span> 实时审计日志流</div>
-    <div class="panel-body">
-      <div class="audit-flow" id="auditFlow">
-        <div style="color:var(--text-muted);text-align:center;padding:20px;font-size:13px;">等待审计事件...</div>
+    <div class="sidebar-section">
+      <div class="sidebar-title">核心能力</div>
+      <div class="features-grid">
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--blue)"></span>Agent Card</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--green)"></span>衰减 Token</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--red)"></span>特权检测</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--purple)"></span>注入防御</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--orange)"></span>人工审批</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--cyan)"></span>风险评分</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--green)"></span>mTLS 签名</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--blue)"></span>审计链</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--orange)"></span>行为基线</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--purple)"></span>最小权限</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--cyan)"></span>会话防走私</div>
+        <div class="feat-chip"><span class="fc-dot" style="background:var(--red)"></span>熔断器</div>
       </div>
     </div>
   </div>
 
-  <div class="panel demo-panel">
-    <div class="panel-header"><span class="icon" style="background:var(--neon-cyan);color:#000;">▶</span> 演示控制台</div>
-    <div class="panel-body">
-      <div class="demo-buttons">
-        <button class="demo-btn" onclick="runDemo('normal-delegation')">正常委托流程</button>
-        <button class="demo-btn" onclick="runDemo('capability-mismatch')">越权拦截流程</button>
-        <button class="demo-btn" onclick="runDemo('token-theft')">Token盗用检测</button>
-        <button class="demo-btn" onclick="runDemo('injection-defense')">Prompt Injection防御</button>
-        <button class="demo-btn" onclick="runDemo('human-approval')">人工审批流程</button>
-        <button class="demo-btn" onclick="runDemo('privilege-escalation')">特权升级防御</button>
+  <div class="center">
+    <div class="stage">
+      <div class="stage-inner">
+        <div class="stage-header">
+          <div>
+            <h1 id="stage-title">正常委托流程</h1>
+            <div class="stage-desc" id="stage-desc">用户请求生成报告 → DocAgent 解析意图 → 签发最小权限 Token → 委托 DataAgent → 返回数据 → 写入文档</div>
+          </div>
+          <div class="stage-badge" id="stage-badge" style="background:var(--green-dim);color:var(--green)">安全 · 合规</div>
+        </div>
+        <div class="flow-area">
+          <div class="flow-steps" id="flow-steps"></div>
+        </div>
       </div>
-      <div class="demo-steps" id="demoSteps"></div>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="btn-run" onclick="runCurrentDemo()">▶ 运行演示</button>
+      <button class="btn btn-ghost btn-sm" id="btn-run-all" onclick="runAllDemos()">▶▶ 全部运行</button>
+      <button class="btn btn-ghost btn-sm" onclick="resetDemo()">↺ 重置</button>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="progress-text" id="progress-text">就绪</div>
+      <div class="toolbar-right">
+        <button class="btn btn-ghost btn-xs" onclick="exportReport()">📄 报告</button>
+        <button class="btn btn-ghost btn-xs" onclick="verifyChain()">⛓ 验证链</button>
+      </div>
     </div>
   </div>
 
+  <div class="right-panel">
+    <div class="metrics-row">
+      <div class="metric"><span class="m-val" id="m-agents" style="color:var(--blue)">0</span><span class="m-lbl">Agent</span></div>
+      <div class="metric"><span class="m-sep"></span></div>
+      <div class="metric"><span class="m-val" id="m-tokens" style="color:var(--cyan)">0</span><span class="m-lbl">Token</span></div>
+      <div class="metric"><span class="m-sep"></span></div>
+      <div class="metric"><span class="m-val" id="m-deny" style="color:var(--red)">0</span><span class="m-lbl">拦截</span></div>
+      <div class="metric"><span class="m-sep"></span></div>
+      <div class="metric"><span class="m-val" id="m-risk" style="color:var(--green)">5</span><span class="m-lbl">风险</span></div>
+    </div>
+    <div class="rp-section" style="flex:1;min-height:0">
+      <div class="rp-header"><h3>🔗 调用链</h3><span class="rp-tag">实时</span></div>
+      <div class="rp-body" style="padding:0 16px 12px">
+        <div class="chain-canvas-wrap"><canvas id="chain-canvas"></canvas></div>
+      </div>
+    </div>
+    <div class="rp-section" style="flex:1;min-height:0">
+      <div class="rp-header"><h3>📋 审计日志</h3><span class="rp-tag">链式哈希</span></div>
+      <div class="rp-body" id="audit-stream"></div>
+    </div>
+  </div>
+</div>
 </div>
 
-<div class="approval-modal" id="approvalModal">
-  <div class="approval-card">
-    <h3>⚠️ 人工审批请求</h3>
-    <div id="approvalInfo" style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;"></div>
-    <div class="approval-timer" id="approvalTimer">30</div>
-    <div style="text-align:center;font-size:12px;color:var(--text-muted);margin-bottom:8px;">秒后自动拒绝</div>
-    <div class="approval-btns">
-      <button class="approve" onclick="resolveApproval(true)">批准</button>
-      <button class="reject" onclick="resolveApproval(false)">拒绝</button>
+<div class="approval-overlay" id="approval-overlay">
+  <div class="approval-modal">
+    <div class="am-icon">⚠️</div>
+    <h3>人工审批请求</h3>
+    <p id="approval-desc"></p>
+    <div class="am-timer" id="approval-timer"></div>
+    <div class="am-btns">
+      <button class="btn btn-primary btn-sm" onclick="resolveApproval(true)">✓ 批准</button>
+      <button class="btn btn-ghost btn-sm" style="border-color:var(--red);color:var(--red)" onclick="resolveApproval(false)">✗ 拒绝</button>
     </div>
   </div>
 </div>
 
-<div class="toast-container" id="toastContainer"></div>
+<div class="intro-overlay" id="intro-overlay">
+  <div class="io-icon" id="intro-icon"></div>
+  <h2 id="intro-title"></h2>
+  <p id="intro-desc"></p>
+  <div class="io-badge" id="intro-badge"></div>
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script>
-const API = window.location.origin;
+const WS_URL = `ws://${location.host}/ws`;
+const API = `http://${location.host}/api`;
 let ws = null;
-let wsReconnectTimer = null;
-let agentsCache = [];
-let graphData = { nodes: [], edges: [] };
+let agents = {};
+let activeTokens = 0;
+let denyCount = 0;
+let chainValid = true;
 let currentApprovalTaskId = null;
-let approvalTimerInterval = null;
-let approvalCountdown = 30;
+let approvalTimer = null;
+let currentScenario = 'normal-delegation';
+let demoRunning = false;
+let flowStepEls = [];
+let animationFrameId = null;
 
-function connectWS() {
-  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  try { ws = new WebSocket(proto + '://' + location.host + '/ws'); } catch(e) { wsReconnectTimer = setTimeout(connectWS, 5000); return; }
-  ws.onopen = () => { document.getElementById('wsDot').classList.add('green'); document.getElementById('wsStatus').textContent = '已连接'; };
-  ws.onclose = () => { document.getElementById('wsDot').classList.remove('green'); document.getElementById('wsDot').classList.add('red'); document.getElementById('wsStatus').textContent = '已断开'; ws = null; wsReconnectTimer = setTimeout(connectWS, 3000); };
-  ws.onerror = () => { ws.close(); };
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'pong') return;
-      if (msg.type === 'demo_step') handleDemoStep(msg.data);
-      if (msg.type === 'human_approval_required') showApprovalModal(msg.data);
-      if (msg.type === 'token_issued' || msg.type === 'delegation_success') { refreshMetrics(); refreshAudit(); refreshGraph(); }
-      if (msg.type === 'delegation_denied' || msg.type === 'privilege_escalation' || msg.type === 'injection_detected') { refreshMetrics(); refreshAudit(); toast('安全事件: ' + msg.type, 'error'); }
-    } catch(err) {}
+const AGENT_COLORS = {'agent_doc_001':'#3b82f6','agent_data_001':'#22c55e','agent_search_001':'#f59e0b'};
+const AGENT_NAMES = {'agent_doc_001':'DocAgent','agent_data_001':'DataAgent','agent_search_001':'SearchAgent'};
+const AGENT_ICONS = {'agent_doc_001':'📄','agent_data_001':'📊','agent_search_001':'🔍'};
+
+const SCENARIOS = {
+  'normal-delegation': {
+    icon:'✅', title:'正常委托流程', color:'var(--green)', badge:'安全 · 合规',
+    desc:'用户请求生成报告 → DocAgent 解析意图 → 签发最小权限 Token → 委托 DataAgent → 返回数据 → 写入文档',
+    steps:[
+      {title:'用户发起请求',desc:'用户输入"生成季度销售报告"'},
+      {title:'意图解析',desc:'DocAgent 解析意图，推断最小权限集合',detail:'intent'},
+      {title:'Token 签发',desc:'AuthServer 三方交集计算，签发衰减层级 0 的 Token',detail:'token'},
+      {title:'发起委托',desc:'DocAgent 携带 Token 调用 DataAgent',detail:'chain'},
+      {title:'mTLS 验证 + 子 Token 签发',desc:'DataAgent 验证身份，签发衰减层级 +1 的子 Token',detail:'delegate'},
+      {title:'API 调用 + 写入文档',desc:'DataAgent 读取数据，DocAgent 写入飞书文档',detail:'success'},
+    ]
+  },
+  'capability-mismatch': {
+    icon:'🚫', title:'越权拦截', color:'var(--red)', badge:'拦截 · 越权',
+    desc:'SearchAgent 尝试委托 DataAgent 读取多维表格，但自身不具备该能力，委托被拒绝',
+    steps:[
+      {title:'SearchAgent 发起调用',desc:'SearchAgent 携带自身 Token 尝试委托 DataAgent',detail:'token'},
+      {title:'能力不匹配',desc:'SearchAgent 注册能力中不包含 lark:bitable:read',detail:'error'},
+      {title:'返回错误码',desc:'ERR_DELEGATION_DENIED — 能力不足，委托链断裂',detail:'error_code'},
+      {title:'风险评分升级',desc:'审计日志记录 deny 条目，风险分自动升级',detail:'risk'},
+    ]
+  },
+  'token-theft': {
+    icon:'🔑', title:'Token 盗用防御', color:'var(--orange)', badge:'防御 · 身份伪造',
+    desc:'攻击者窃取 Token 后尝试冒充身份调用 API，mTLS 签名验证失败',
+    steps:[
+      {title:'Token 被盗',desc:'模拟场景：攻击者获取了 DocAgent 的 Token',detail:'stolen'},
+      {title:'冒充验证',desc:'攻击者使用盗用 Token 尝试验证身份',detail:'verify'},
+      {title:'mTLS 签名验证失败',desc:'AuthServer 要求 RSA 签名，攻击者无法伪造',detail:'error'},
+      {title:'安全事件记录',desc:'盗用尝试记录到不可篡改审计链',detail:'alert'},
+    ]
+  },
+  'injection-defense': {
+    icon:'🧠', title:'Prompt 注入防御', color:'var(--purple)', badge:'防御 · 注入攻击',
+    desc:'恶意用户尝试通过 Prompt 注入获取管理员权限，三层检测机制拦截攻击',
+    steps:[
+      {title:'恶意输入检测',desc:'检测到包含"忽略指令""管理员权限"的恶意输入',detail:'injection'},
+      {title:'三层检测',desc:'关键词匹配 + 正则模式 + 语义规则',detail:'scan'},
+      {title:'拦截并返回错误码',desc:'PROMPT_INJECTION_BLOCKED',detail:'blocked'},
+    ]
+  },
+  'human-approval': {
+    icon:'⚡', title:'人工审批断路器', color:'var(--orange)', badge:'审批 · 敏感操作',
+    desc:'涉及敏感操作自动触发人工审批，30秒超时自动拒绝',
+    steps:[
+      {title:'敏感操作请求',desc:'DataAgent 接收涉及通讯录读取 + 表格写入的委托',detail:'token'},
+      {title:'风险评分触发',desc:'lark:contact:read + lark:bitable:write 超过风险阈值',detail:'risk'},
+      {title:'自动挂起',desc:'系统将请求置为 PENDING_HUMAN_APPROVAL',detail:'approval'},
+      {title:'签发受限 Token',desc:'审批通过后签发 5 分钟单次使用 Token',detail:'success'},
+    ]
+  },
+  'privilege-escalation': {
+    icon:'🛡', title:'特权升级检测', color:'var(--red)', badge:'告警 · 特权升级',
+    desc:'SearchAgent 尝试请求超出注册基线的权限，触发特权升级检测',
+    steps:[
+      {title:'越权请求',desc:'SearchAgent 尝试请求 lark:bitable:write + lark:contact:read',detail:'escalation'},
+      {title:'基线比对',desc:'PrivilegeEscalationDetector 比对注册基线能力',detail:'baseline'},
+      {title:'检测到特权升级',desc:'ERR_PRIVILEGE_ESCALATION',detail:'error'},
+      {title:'撤销全部 Token',desc:'该 Agent 所有活跃 Token 立即被撤销',detail:'revoked'},
+      {title:'安全告警',desc:'生成 PRIVILEGE_ESCALATION_ALERT 审计日志',detail:'alert'},
+    ]
+  },
+};
+
+function connectWS(){
+  ws=new WebSocket(WS_URL);
+  ws.onopen=()=>{};
+  ws.onmessage=(e)=>{try{handleWSMessage(JSON.parse(e.data))}catch(err){}};
+  ws.onclose=()=>{setTimeout(connectWS,3000)};
+  ws.onerror=()=>{};
+  setInterval(()=>{if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'ping'}))},30000);
+}
+
+function handleWSMessage(msg){
+  if(['token_issued','token_revoked','delegation_success','delegation_denied'].includes(msg.type))refreshMetrics();
+  if(msg.type==='human_approval_required')showApprovalModal(msg.data);
+  if(msg.type==='demo_step')handleDemoStep(msg.data);
+  if(msg.type==='privilege_escalation')addAuditLog({decision:'ALERT',action_type:'privilege_escalation',requesting_agent:msg.data.agent_id,deny_reason:'特权升级检测'});
+}
+
+async function refreshMetrics(){
+  try{
+    const r=await fetch(`${API}/system/metrics`);
+    const m=await r.json();
+    activeTokens=m.tokens?.active||0;
+    denyCount=m.audit?.deny_count||0;
+    chainValid=m.audit_chain?.valid!==false;
+    document.getElementById('nav-tokens').textContent=activeTokens;
+    document.getElementById('nav-deny').textContent=denyCount;
+    const ce=document.getElementById('nav-chain');
+    ce.textContent=chainValid?'✓':'✗';
+    ce.style.color=chainValid?'var(--green)':'var(--red)';
+    document.getElementById('m-agents').textContent=m.agents?.total||0;
+    document.getElementById('m-tokens').textContent=activeTokens;
+    document.getElementById('m-deny').textContent=denyCount;
+    const rv=Math.min(100,denyCount*15+(chainValid?0:50));
+    const re=document.getElementById('m-risk');
+    re.textContent=rv;
+    re.style.color=rv<30?'var(--green)':rv<60?'var(--orange)':'var(--red)';
+  }catch(e){}
+}
+
+async function loadAgents(){
+  try{
+    const r=await fetch(`${API}/agents`);
+    const list=await r.json();
+    agents={};
+    list.forEach(a=>{agents[a.agent_id]=a});
+    renderAgentCards();
+    drawChainCanvas();
+  }catch(e){}
+}
+
+function renderAgentCards(){
+  const c=document.getElementById('agent-cards');
+  c.innerHTML='';
+  Object.entries(agents).forEach(([id,a])=>{
+    const color=AGENT_COLORS[id]||'#3b82f6';
+    const icon=AGENT_ICONS[id]||'🤖';
+    const risk=a.risk_score||0;
+    const riskColor=risk<30?'var(--green)':risk<60?'var(--orange)':'var(--red)';
+    const d=document.createElement('div');
+    d.className='agent-card';
+    d.innerHTML=`
+      <div class="ac-top">
+        <div class="ac-icon" style="background:${color}22">${icon}</div>
+        <div><div class="ac-name" style="color:${color}">${a.agent_name||id}</div><div class="ac-id">${id}</div></div>
+      </div>
+      <div class="ac-caps">${(a.capabilities||[]).map(c=>`<span class="ac-cap" style="background:${color}15;color:${color}">${c}</span>`).join('')}</div>
+      <div class="ac-risk"><span style="color:var(--tx3)">风险</span><div class="risk-bar"><div class="risk-fill" style="width:${risk}%;background:${riskColor}"></div></div><span class="risk-val" style="color:${riskColor}">${risk.toFixed(0)}</span></div>`;
+    c.appendChild(d);
+  });
+}
+
+function renderScenarioList(){
+  const c=document.getElementById('scenario-list');
+  c.innerHTML='';
+  Object.entries(SCENARIOS).forEach(([key,s])=>{
+    const b=document.createElement('button');
+    b.className='scenario-btn'+(key===currentScenario?' active':'');
+    b.dataset.scenario=key;
+    b.innerHTML=`<span class="s-icon">${s.icon}</span><div class="s-info"><span class="s-name">${s.title}</span><span class="s-desc">${s.desc.substring(0,30)}...</span></div>`;
+    b.onclick=()=>selectScenario(key);
+    c.appendChild(b);
+  });
+}
+
+function selectScenario(key){
+  currentScenario=key;
+  document.querySelectorAll('.scenario-btn').forEach(b=>b.classList.toggle('active',b.dataset.scenario===key));
+  renderFlowSteps(key);
+  const s=SCENARIOS[key];
+  document.getElementById('stage-title').innerHTML=s.title.replace(/^(.+)(流程|拦截|防御|断路器|检测)$/,('<span class="hl">$1</span>$2'));
+  document.getElementById('stage-desc').textContent=s.desc;
+  const badge=document.getElementById('stage-badge');
+  badge.textContent=s.badge;
+  const dimMap={'var(--green)':'var(--green-dim)','var(--red)':'var(--red-dim)','var(--orange)':'var(--orange-dim)','var(--purple)':'var(--purple-dim)'};
+  badge.style.background=dimMap[s.color]||'var(--blue-dim)';
+  badge.style.color=s.color;
+}
+
+function renderFlowSteps(scenario){
+  const s=SCENARIOS[scenario];
+  if(!s)return;
+  const c=document.getElementById('flow-steps');
+  c.innerHTML='';
+  flowStepEls=[];
+  s.steps.forEach((step,i)=>{
+    const d=document.createElement('div');
+    d.className='flow-step';
+    d.id=`fstep-${i}`;
+    d.innerHTML=`
+      <div class="step-line">
+        <div class="step-dot"></div>
+        ${i<s.steps.length-1?'<div class="step-connector"></div>':''}
+      </div>
+      <div class="step-content">
+        <div class="step-title">${step.title}</div>
+        <div class="step-desc">${step.desc}</div>
+        <div class="step-detail" id="fdetail-${i}"></div>
+      </div>`;
+    c.appendChild(d);
+    flowStepEls.push(d);
+    setTimeout(()=>d.classList.add('visible'),50+i*60);
+  });
+}
+
+function activateFlowStep(index,type){
+  flowStepEls.forEach((el,i)=>{
+    if(i<index){
+      if(!el.classList.contains('success')&&!el.classList.contains('error')&&!el.classList.contains('warning'))
+        el.classList.add('success');
+      el.classList.remove('active');
+    }else if(i===index){
+      el.classList.remove('success','error','warning');
+      el.classList.add(type||'active');
+      el.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
+  });
+}
+
+function setFlowStepResult(index,type){
+  const el=flowStepEls[index];
+  if(el){el.classList.remove('active');el.classList.add(type)}
+}
+
+function showIntro(scenario){
+  const s=SCENARIOS[scenario];
+  if(!s)return Promise.resolve();
+  const o=document.getElementById('intro-overlay');
+  document.getElementById('intro-icon').textContent=s.icon;
+  document.getElementById('intro-title').textContent=s.title;
+  document.getElementById('intro-desc').textContent=s.desc;
+  const b=document.getElementById('intro-badge');
+  b.textContent=s.badge;
+  b.style.background=s.color;
+  b.style.color='#fff';
+  o.classList.add('show');
+  return new Promise(r=>setTimeout(()=>{o.classList.remove('show');r()},1200));
+}
+
+function buildTokenDetail(tokenData,statusText,statusType){
+  if(!tokenData)return'';
+  let displayData={};
+  let accessToken='';
+  if(tokenData.access_token){
+    accessToken=tokenData.access_token;
+    try{const parts=tokenData.access_token.split('.');if(parts.length>=2)displayData=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')))}catch(e){displayData=tokenData}
+  }else{displayData=tokenData}
+  let html=`<div class="token-card"><div class="tc-status ${statusType}">${statusText}</div>`;
+  try{
+    const parts=accessToken.split('.');
+    if(parts.length>=2){
+      const header=JSON.parse(atob(parts[0].replace(/-/g,'+').replace(/_/g,'/')));
+      html+=`<div class="jwt-parts"><div class="jwt-part hdr"><div class="jp-label">HEADER</div>`;
+      Object.entries(header).forEach(([k,v])=>{html+=`<div class="jp-field"><span class="jp-k">${k}</span><span class="jp-v">${v}</span></div>`});
+      html+=`</div><div class="jwt-part pay"><div class="jp-label">PAYLOAD</div>`;
+      Object.entries(displayData).forEach(([k,v])=>{
+        if(k==='capabilities'&&Array.isArray(v))html+=`<div class="jp-field"><span class="jp-k">${k}</span><span class="jp-v cap">${v.join(', ')}</span></div>`;
+        else html+=`<div class="jp-field"><span class="jp-k">${k}</span><span class="jp-v">${String(v).substring(0,30)}</span></div>`;
+      });
+      html+=`</div><div class="jwt-part sig"><div class="jp-label">SIGNATURE</div><div class="jp-field"><span class="jp-k">RSA-256</span><span class="jp-v">${parts[2]?parts[2].substring(0,16)+'...':'N/A'}</span></div></div></div>`;
+    }
+  }catch(e){html+=`<div style="font-size:9px;color:var(--tx3)">Token 解析失败</div>`}
+  const attLevel=displayData.attenuation_level??tokenData.attenuation_level??0;
+  const pct=Math.max(10,100-attLevel*25);
+  const attColor=attLevel===0?'var(--green)':attLevel===1?'var(--blue)':attLevel===2?'var(--orange)':'var(--red)';
+  html+=`<div class="att-row"><span class="att-lbl">衰减层级</span><div class="att-track"><div class="att-fill" style="width:${pct}%;background:${attColor}"></div></div><span class="att-val" style="color:${attColor}">${attLevel}</span></div>`;
+  html+=`</div>`;
+  return html;
+}
+
+function buildScanDetail(scanResult){
+  if(!scanResult)return'';
+  const layers=scanResult.layers||{};
+  const threats=scanResult.threats||[];
+  let html=`<div class="scan-result"><div class="sr-layers">`;
+  html+=`<div class="sr-layer ${layers.keyword_regex?'fail':'pass'}">关键词/正则 ${layers.keyword_regex?'⚠ 拦截':'✓ 通过'}</div>`;
+  html+=`<div class="sr-layer ${layers.semantic_rules?'fail':'pass'}">语义规则 ${layers.semantic_rules?'⚠ 拦截':'✓ 通过'}</div>`;
+  html+=`</div>`;
+  if(threats.length){html+=`<div class="sr-threats">${threats.map(t=>`<div class="sr-threat">[${t.severity}] ${t.type}: ${t.matched_text}</div>`).join('')}</div>`}
+  html+=`</div>`;
+  return html;
+}
+
+function buildRiskDetail(riskData){
+  if(!riskData||!riskData.dimensions)return'';
+  const dims=riskData.dimensions;
+  const labels={request_frequency:'请求频率',chain_depth:'链深度',time_period:'时间窗口',capability_combo:'能力组合',history_violations:'违规历史'};
+  let html=`<div class="risk-radar"><div class="rr-title">风险评分五维度分析</div><div class="rr-dims">`;
+  Object.entries(dims).forEach(([k,v])=>{
+    const c=v<30?'var(--green)':v<60?'var(--orange)':'var(--red)';
+    html+=`<div class="rr-dim"><span class="rd-name">${labels[k]||k}</span><div class="rd-bar"><div class="rd-fill" style="width:${v}%;background:${c}"></div></div><span class="rd-val" style="color:${c}">${v.toFixed(0)}</span></div>`;
+  });
+  html+=`</div></div>`;
+  return html;
+}
+
+function buildErrorDetail(code,msg){
+  return`<div class="error-card"><div class="ec-code">${code}</div><div class="ec-msg">${msg}</div></div>`;
+}
+
+function buildApprovalDetail(taskId,caps){
+  return`<div class="approval-card"><div class="ap-title">⏳ PENDING_HUMAN_APPROVAL</div><div class="ap-desc">请求能力: ${(caps||[]).join(', ')}</div><div class="ap-btns"><button class="btn btn-primary btn-xs" onclick="resolveApproval(true)">✓ 批准</button><button class="btn btn-ghost btn-xs" style="border-color:var(--red);color:var(--red)" onclick="resolveApproval(false)">✗ 拒绝</button></div></div>`;
+}
+
+function handleDemoStep(step){
+  const idx=step.step-1;
+  if(idx<0||idx>=flowStepEls.length)return;
+  const detailEl=document.getElementById(`fdetail-${idx}`);
+  if(!detailEl)return;
+  let detailHtml='';
+
+  if(step.token){
+    const statusMap={
+      'token_issue':['Token 已签发','issued'],
+      'search_token':['SearchAgent Token 已签发','issued'],
+      'sensitive_request':['DocAgent Token 已签发','issued'],
+      'token_stolen':['Token 已被盗用','stolen'],
+      'verify_attempt':['盗用 Token 尝试验证','warning'],
+    };
+    const [st,sc]=statusMap[step.action]||['Token','issued'];
+    detailHtml+=buildTokenDetail(step.token,st,sc);
+  }
+
+  if(step.action==='mtls_verify'&&step.delegation&&step.delegation.access_token){
+    detailHtml+=buildTokenDetail(step.delegation,'委托 Token 已签发 (衰减 +1)','issued');
+  }
+
+  if(step.action==='injection_scan'&&step.scan_result){
+    detailHtml+=buildScanDetail(step.scan_result);
+  }
+
+  if(step.action==='injection_blocked'){
+    detailHtml+=buildErrorDetail('PROMPT_INJECTION_BLOCKED','三层检测全部触发，注入攻击已拦截');
+  }
+
+  if(step.action==='capability_denied'||step.action==='delegation_error'){
+    detailHtml+=buildErrorDetail('ERR_DELEGATION_DENIED',step.error||'能力不匹配，委托被拒绝');
+  }
+
+  if(step.action==='escalation_detected'){
+    detailHtml+=buildErrorDetail('ERR_PRIVILEGE_ESCALATION',step.error||'请求能力超出注册基线');
+  }
+
+  if(step.action==='verify_failed'){
+    detailHtml+=buildErrorDetail('ERR_IDENTITY_UNVERIFIABLE','mTLS 签名验证失败，身份无法确认');
+  }
+
+  if(step.action==='risk_upgrade'&&step.risk_score!==undefined){
+    detailHtml+=buildRiskDetail({dimensions:{request_frequency:step.risk_score*0.8,chain_depth:step.risk_score*0.3,time_period:10,capability_combo:step.risk_score*0.6,history_violations:step.risk_score*0.9}});
+  }
+
+  if(step.action==='approval_required'||step.action==='approval_popup'){
+    detailHtml+=buildApprovalDetail(step.task_id,step.requested_capabilities);
+  }
+
+  if(step.action==='approval_result'&&step.delegation&&step.delegation.access_token){
+    detailHtml+=buildTokenDetail(step.delegation,'审批通过 — 受限 Token 已签发','issued');
+  }
+
+  if(step.action==='delegated'&&step.delegation&&step.delegation.access_token){
+    detailHtml+=buildTokenDetail(step.delegation,'委托成功','issued');
+  }
+
+  if(step.action==='tokens_revoked'){
+    detailHtml+=buildErrorDetail('ALL_TOKENS_REVOKED','该 Agent 所有活跃 Token 已被撤销');
+  }
+
+  if(detailHtml)detailEl.innerHTML=detailHtml;
+
+  if(step.action==='token_issue'||step.action==='search_token'||step.action==='sensitive_request'){
+    const aid=step.token?.agent_id||(step.token?.access_token?parseJWTAgent(step.token.access_token):'agent_doc_001');
+    startCanvasAnimation(null,aid,[aid]);
+  }
+  if(step.action==='delegation_start')startCanvasAnimation({'agent_doc_001->agent_data_001':'green'},'agent_doc_001',['agent_doc_001','agent_data_001']);
+  if(step.action==='mtls_verify'||step.action==='delegation_success')startCanvasAnimation({'agent_doc_001->agent_data_001':'green'},'agent_data_001',['agent_data_001']);
+  if(step.action==='capability_denied'||step.action==='delegation_error')startCanvasAnimation({'agent_doc_001->agent_data_001':'red'},null,[]);
+  if(step.action==='token_stolen')startCanvasAnimation({'agent_doc_001->agent_data_001':'purple'},null,[]);
+  if(step.action==='escalation_attempt'||step.action==='escalation_detected')startCanvasAnimation(null,'agent_search_001',['agent_search_001']);
+  if(step.action==='approval_required'||step.action==='approval_popup')startCanvasAnimation({'agent_doc_001->agent_data_001':'yellow'},null,['agent_doc_001','agent_data_001']);
+
+  if(step.action==='injection_blocked')addAuditLog({decision:'DENY',action_type:'injection_blocked',requesting_agent:'agent_doc_001',deny_reason:'Prompt injection detected and blocked'});
+  if(step.action==='escalation_detected')addAuditLog({decision:'ALERT',action_type:'privilege_escalation_detected',requesting_agent:'agent_search_001',deny_reason:step.error||'Privilege escalation'});
+  if(step.action==='verify_failed')addAuditLog({decision:'DENY',action_type:'token_verify',requesting_agent:'agent_data_001',deny_reason:'mTLS signature verification failed'});
+}
+
+function parseJWTAgent(token){
+  try{const parts=token.split('.');if(parts.length>=2){const p=JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));return p.agent_id||''}}catch(e){}
+  return'';
+}
+
+function drawChainCanvas(edgeHighlights,activeNodeId,pulseNodes){
+  const canvas=document.getElementById('chain-canvas');
+  const wrap=canvas.parentElement;
+  const rect=wrap.getBoundingClientRect();
+  if(rect.width<10||rect.height<10){setTimeout(()=>drawChainCanvas(edgeHighlights,activeNodeId,pulseNodes),200);return}
+  const dpr=window.devicePixelRatio||1;
+  canvas.width=rect.width*dpr;canvas.height=rect.height*dpr;
+  canvas.style.width=rect.width+'px';canvas.style.height=rect.height+'px';
+  const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+  const w=rect.width,h=rect.height;ctx.clearRect(0,0,w,h);
+  const cx=w/2,cy=h/2,radius=Math.min(w,h)*0.3;
+  const nodePositions={
+    'agent_doc_001':{x:cx-radius*0.9,y:cy-radius*0.4},
+    'agent_data_001':{x:cx+radius*0.9,y:cy-radius*0.4},
+    'agent_search_001':{x:cx,y:cy+radius*0.8},
   };
+  const edges=[{from:'agent_doc_001',to:'agent_data_001',label:'delegate'},{from:'agent_doc_001',to:'agent_search_001',label:'delegate'}];
+  edges.forEach(edge=>{
+    const from=nodePositions[edge.from],to=nodePositions[edge.to];
+    if(!from||!to)return;
+    let color='rgba(255,255,255,0.04)',width=1,glow=false;
+    if(edgeHighlights){
+      const key=`${edge.from}->${edge.to}`;
+      const ec=edgeHighlights[key];
+      if(ec==='green'){color='rgba(34,197,94,0.7)';width=2;glow=true}
+      else if(ec==='red'){color='rgba(239,68,68,0.7)';width=2;glow=true}
+      else if(ec==='yellow'){color='rgba(245,158,11,0.7)';width=2;glow=true}
+      else if(ec==='purple'){color='rgba(168,85,247,0.7)';width=2;glow=true}
+    }
+    if(glow){ctx.save();ctx.shadowColor=color;ctx.shadowBlur=10}
+    const cpx=(from.x+to.x)/2,cpy=(from.y+to.y)/2-20;
+    ctx.beginPath();ctx.moveTo(from.x,from.y);ctx.quadraticCurveTo(cpx,cpy,to.x,to.y);
+    ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();
+    if(glow){
+      const t=performance.now()/1000,pt=(t*0.5)%1;
+      const px=(1-pt)*(1-pt)*from.x+2*(1-pt)*pt*cpx+pt*pt*to.x;
+      const py=(1-pt)*(1-pt)*from.y+2*(1-pt)*pt*cpy+pt*pt*to.y;
+      ctx.beginPath();ctx.arc(px,py,2.5,0,Math.PI*2);ctx.fillStyle=color;ctx.fill();
+    }
+    const mt=0.55,mx=(1-mt)*(1-mt)*from.x+2*(1-mt)*mt*cpx+mt*mt*to.x;
+    const my=(1-mt)*(1-mt)*from.y+2*(1-mt)*mt*cpy+mt*mt*to.y;
+    const dx=2*(1-mt)*(cpx-from.x)+2*mt*(to.x-cpx),dy=2*(1-mt)*(cpy-from.y)+2*mt*(to.y-cpx);
+    const angle=Math.atan2(dy,dx);
+    ctx.beginPath();ctx.moveTo(mx,my);ctx.lineTo(mx-6*Math.cos(angle-0.4),my-6*Math.sin(angle-0.4));
+    ctx.moveTo(mx,my);ctx.lineTo(mx-6*Math.cos(angle+0.4),my-6*Math.sin(angle+0.4));
+    ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();
+    if(glow)ctx.restore();
+  });
+  Object.entries(nodePositions).forEach(([id,pos])=>{
+    const agent=agents[id]||{};
+    const color=AGENT_COLORS[id]||'#3b82f6';
+    const name=AGENT_NAMES[id]||id;
+    const nodeR=Math.min(24,Math.max(16,w*0.04));
+    const isActive=activeNodeId===id;
+    const isPulse=pulseNodes&&pulseNodes.includes(id);
+    if(isPulse){const pr=nodeR+8+Math.sin(performance.now()/300)*3;ctx.beginPath();ctx.arc(pos.x,pos.y,pr,0,Math.PI*2);ctx.fillStyle=color+'10';ctx.fill()}
+    ctx.beginPath();ctx.arc(pos.x,pos.y,nodeR,0,Math.PI*2);
+    const grad=ctx.createRadialGradient(pos.x-nodeR*0.3,pos.y-nodeR*0.3,0,pos.x,pos.y,nodeR);
+    grad.addColorStop(0,color+'30');grad.addColorStop(1,color+'0d');
+    ctx.fillStyle=grad;ctx.fill();
+    ctx.strokeStyle=isActive?color:color+'44';ctx.lineWidth=isActive?2:1;
+    if(isActive){ctx.shadowColor=color;ctx.shadowBlur=10}
+    ctx.stroke();ctx.shadowBlur=0;
+    ctx.fillStyle='#fff';ctx.font=`700 ${Math.max(7,nodeR*0.32)}px sans-serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(name,pos.x,pos.y);
+  });
 }
 
-function toast(msg, type='info') {
-  const c = document.getElementById('toastContainer');
-  const t = document.createElement('div');
-  t.className = 'toast ' + type;
-  t.textContent = msg;
-  c.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 4000);
+function startCanvasAnimation(edgeHighlights,activeNodeId,pulseNodes){
+  if(animationFrameId)cancelAnimationFrame(animationFrameId);
+  function loop(){drawChainCanvas(edgeHighlights,activeNodeId,pulseNodes);animationFrameId=requestAnimationFrame(loop)}
+  loop();
+}
+function stopCanvasAnimation(){if(animationFrameId){cancelAnimationFrame(animationFrameId);animationFrameId=null}drawChainCanvas()}
+
+function addAuditLog(log){
+  const stream=document.getElementById('audit-stream');
+  const div=document.createElement('div');
+  const decision=(log.decision||'ALLOW').toUpperCase();
+  let cls='log-allow',color='var(--green)';
+  if(decision==='DENY'){cls='log-deny';color='var(--red)'}
+  else if(decision==='ALERT'){cls='log-alert';color='var(--orange)'}
+  const time=log.timestamp?new Date(log.timestamp*1000).toLocaleTimeString():new Date().toLocaleTimeString();
+  div.className=`audit-entry ${cls}`;
+  div.style.cssText='opacity:0;transform:translateY(-4px);transition:opacity 0.25s,transform 0.25s';
+  div.innerHTML=`<div class="ae-row"><span class="ae-decision" style="color:${color}">${decision}</span><span class="ae-time">${time}</span><span class="ae-agent">${log.requesting_agent||'system'}</span><span class="ae-action">${log.action_type||''}</span></div>${log.deny_reason?`<div style="font-size:8px;color:var(--tx4);margin-top:2px">${log.deny_reason}</div>`:''}`;
+  div.onclick=()=>div.classList.toggle('expanded');
+  stream.insertBefore(div,stream.firstChild);
+  requestAnimationFrame(()=>{div.style.opacity='1';div.style.transform='translateY(0)'});
+  if(stream.children.length>40)stream.removeChild(stream.lastChild);
 }
 
-async function fetchJSON(url, opts) {
-  try {
-    const resp = await fetch(API + url, opts);
-    return await resp.json();
-  } catch(e) { console.error(e); return null; }
+async function loadAuditLogs(){
+  try{
+    const r=await fetch(`${API}/audit/logs?limit=15`);
+    const logs=await r.json();
+    const stream=document.getElementById('audit-stream');
+    stream.innerHTML='';
+    logs.reverse().forEach(log=>addAuditLog(log));
+  }catch(e){}
 }
 
-async function refreshMetrics() {
-  const m = await fetchJSON('/api/system/metrics');
-  if (!m) return;
-  document.getElementById('healthStatus').textContent = '正常';
-  document.getElementById('healthDot').classList.add('green');
-  document.getElementById('activeTokens').textContent = m.tokens?.active || 0;
-  document.getElementById('denyCount').textContent = m.audit?.deny_count || 0;
-  const chainValid = m.audit_chain?.valid;
-  document.getElementById('chainStatus').textContent = chainValid ? '完整' : '断裂';
-  document.getElementById('chainDot').className = 'status-dot ' + (chainValid ? 'green' : 'red');
-  if (m.demo_mode) document.getElementById('demoBanner').style.display = 'block';
-}
-
-async function refreshAgents() {
-  const agents = await fetchJSON('/api/agents');
-  if (!agents) return;
-  agentsCache = agents;
-  const panel = document.getElementById('agentPanel');
-  panel.innerHTML = agents.map(a => {
-    const risk = a.risk_score || 0;
-    const riskColor = risk >= 70 ? 'var(--neon-red)' : risk >= 40 ? 'var(--neon-amber)' : 'var(--neon-green)';
-    const card = a.agent_card || {};
-    return `<div style="background:var(--bg-elevated);border-radius:8px;padding:12px;margin-bottom:8px;border-left:3px solid ${riskColor}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-weight:600;color:var(--text-bright)">${a.agent_name}</span>
-        <span style="font-family:var(--font-mono);font-size:12px;color:${riskColor}">Risk: ${risk.toFixed(1)}</span>
-      </div>
-      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px">ID: ${a.agent_id} | Type: ${a.agent_type}</div>
-      <div style="font-size:11px;color:var(--text-muted)">Trust: ${a.trust_score} | Trust Level: ${card.trust_level || '--'}</div>
-      <div style="font-size:11px;color:var(--neon-cyan);margin-top:4px">${(a.capabilities||[]).join(', ')}</div>
-    </div>`;
-  }).join('');
-}
-
-async function refreshAudit() {
-  const logs = await fetchJSON('/api/audit/logs?limit=30');
-  if (!logs) return;
-  const flow = document.getElementById('auditFlow');
-  flow.innerHTML = logs.map(l => {
-    const cls = (l.decision||'').toLowerCase();
-    const t = new Date(l.timestamp * 1000);
-    const time = t.toLocaleTimeString('zh-CN', {hour12:false});
-    return `<div class="audit-entry ${cls}" onclick="this.classList.toggle('expanded')">
-      <span class="audit-time">${time}</span>
-      <span class="audit-agent">${l.requesting_agent}</span>
-      <span class="audit-action">${l.action_type}${l.target_agent ? ' → ' + l.target_agent : ''}</span>
-      <span class="audit-decision ${cls}">${l.decision}</span>
-      <div class="audit-detail">
-        <div>log_id: ${l.log_id}</div>
-        <div>prev_hash: ${l.prev_log_hash?.substring(0,16)}...</div>
-        <div>curr_hash: ${l.log_hash?.substring(0,16)}...</div>
-        ${l.deny_reason ? '<div style="color:var(--neon-red)">reason: '+l.deny_reason+'</div>' : ''}
-        ${l.error_code ? '<div style="color:var(--neon-amber)">error: '+l.error_code+'</div>' : ''}
-        ${l.risk_score ? '<div>risk_score: '+l.risk_score+'</div>' : ''}
-        ${l.injection_detected ? '<div style="color:var(--neon-red)">⚠ INJECTION DETECTED</div>' : ''}
-        ${l.privilege_escalation_detected ? '<div style="color:var(--neon-red)">⚠ PRIVILEGE ESCALATION</div>' : ''}
-        ${l.trace_id ? '<div>trace: '+l.trace_id+'</div>' : ''}
-      </div>
-    </div>`;
-  }).join('');
-}
-
-async function refreshGraph() {
-  const g = await fetchJSON('/api/delegation/graph');
-  if (!g) return;
-  graphData = g;
-  drawGraph();
-}
-
-function drawGraph() {
-  const canvas = document.getElementById('graphCanvas');
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-
-  ctx.fillStyle = '#0a0f1e';
-  ctx.fillRect(0, 0, W, H);
-
-  const gridColor = 'rgba(56,189,248,0.04)';
-  ctx.strokeStyle = gridColor;
-  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-
-  const nodes = graphData.nodes || [];
-  if (nodes.length === 0) {
-    ctx.fillStyle = '#4a5a80';
-    ctx.font = '14px "Noto Sans SC"';
-    ctx.textAlign = 'center';
-    ctx.fillText('等待调用链数据...', W/2, H/2);
-    return;
+async function runDemo(scenario){
+  if(demoRunning)return;
+  demoRunning=true;
+  currentScenario=scenario;
+  document.querySelectorAll('.scenario-btn').forEach(b=>b.classList.toggle('active',b.dataset.scenario===scenario));
+  selectScenario(scenario);
+  document.getElementById('btn-run').disabled=true;
+  document.getElementById('btn-run-all').disabled=true;
+  await showIntro(scenario);
+  renderFlowSteps(scenario);
+  document.getElementById('progress-fill').style.width='0%';
+  document.getElementById('progress-text').textContent='执行中...';
+  let narrativeIdx=0;
+  try{
+    const resp=await fetch(`${API}/demo/${scenario}`,{method:'POST'});
+    const result=await resp.json();
+    if(result.steps&&result.steps.length>0){
+      const total=result.steps.length;
+      for(let i=0;i<total;i++){
+        const step=result.steps[i];
+        const stepType=mapStepType(step.action);
+        activateFlowStep(narrativeIdx,stepType==='error'?'warning':'active');
+        handleDemoStep(step);
+        document.getElementById('progress-fill').style.width=`${((i+1)/total)*100}%`;
+        document.getElementById('progress-text').textContent=step.description||`步骤 ${i+1}/${total}`;
+        if(stepType==='error')setFlowStepResult(narrativeIdx,'error');
+        else if(stepType==='success')setFlowStepResult(narrativeIdx,'success');
+        else setFlowStepResult(narrativeIdx,'success');
+        narrativeIdx++;
+        await sleep(600);
+      }
+    }
+    document.getElementById('progress-fill').style.width='100%';
+    document.getElementById('progress-text').textContent='✓ 完成';
+    showToast(`✓ ${SCENARIOS[scenario]?.title||scenario} 完成`);
+  }catch(e){
+    document.getElementById('progress-text').textContent='错误';
+    showToast('演示执行失败');
   }
-
-  const nodePositions = {};
-  const colors = { 'agent_doc_001': '#38bdf8', 'agent_data_001': '#34d399', 'agent_search_001': '#a78bfa' };
-  const cx = W / 2, cy = H / 2;
-  const radius = Math.min(W, H) * 0.3;
-
-  nodes.forEach((n, i) => {
-    const angle = (2 * Math.PI * i / nodes.length) - Math.PI / 2;
-    nodePositions[n.id] = { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle), ...n };
-  });
-
-  const edges = graphData.edges || [];
-  edges.forEach(e => {
-    const from = nodePositions[e.source];
-    const to = nodePositions[e.target];
-    if (!from || !to) return;
-    const color = e.last_decision === 'ALLOW' ? '#34d399' : e.last_decision === 'DENY' ? '#f87171' : '#7b8db5';
-    ctx.beginPath();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([]);
-    const dx = to.x - from.x, dy = to.y - from.y;
-    const dist = Math.sqrt(dx*dx + dy*dy);
-    const nx = dx/dist, ny = dy/dist;
-    const startX = from.x + nx*35, startY = from.y + ny*35;
-    const endX = to.x - nx*35, endY = to.y - ny*35;
-    ctx.moveTo(startX, startY);
-    ctx.lineTo(endX, endY);
-    ctx.stroke();
-
-    const arrowLen = 10;
-    const arrowAngle = Math.atan2(dy, dx);
-    ctx.beginPath();
-    ctx.fillStyle = color;
-    ctx.moveTo(endX, endY);
-    ctx.lineTo(endX - arrowLen * Math.cos(arrowAngle - 0.3), endY - arrowLen * Math.sin(arrowAngle - 0.3));
-    ctx.lineTo(endX - arrowLen * Math.cos(arrowAngle + 0.3), endY - arrowLen * Math.sin(arrowAngle + 0.3));
-    ctx.closePath();
-    ctx.fill();
-
-    const midX = (startX + endX) / 2, midY = (startY + endY) / 2;
-    ctx.fillStyle = color;
-    ctx.font = '10px "JetBrains Mono"';
-    ctx.textAlign = 'center';
-    ctx.fillText(`✓${e.success_count} ✗${e.deny_count}`, midX, midY - 6);
-  });
-
-  nodes.forEach(n => {
-    const p = nodePositions[n.id];
-    const color = colors[n.id] || '#38bdf8';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 30, 0, 2 * Math.PI);
-    ctx.fillStyle = 'rgba(15,22,41,0.9)';
-    ctx.fill();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 15;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 30, 0, 2 * Math.PI);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    ctx.fillStyle = color;
-    ctx.font = 'bold 11px "Noto Sans SC"';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(n.name?.substring(0, 6) || n.id.substring(6, 12), p.x, p.y - 4);
-    ctx.fillStyle = '#7b8db5';
-    ctx.font = '9px "JetBrains Mono"';
-    ctx.fillText('T:' + (n.trust_score||0).toFixed(0), p.x, p.y + 10);
-  });
+  stopCanvasAnimation();
+  setTimeout(()=>{
+    demoRunning=false;
+    document.getElementById('btn-run').disabled=false;
+    document.getElementById('btn-run-all').disabled=false;
+    loadAuditLogs();refreshMetrics();loadAgents();
+  },600);
 }
 
-function renderTokenJSON(data) {
-  const panel = document.getElementById('tokenPanel');
-  if (!data) { panel.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:40px;font-size:13px">等待 Token 签发...</div>'; return; }
-  const json = JSON.stringify(data, null, 2);
-  const highlighted = json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
-    let cls = 'json-number';
-    if (/^"/.test(match)) { cls = /:$/.test(match) ? 'json-key' : 'json-string'; }
-    else if (/true|false/.test(match)) cls = 'json-bool';
-    else if (/null/.test(match)) cls = 'json-null';
-    return `<span class="${cls}">${match}</span>`;
-  });
-  panel.innerHTML = `<div class="json-view">${highlighted}</div>`;
+function mapStepType(action){
+  if(!action)return'active';
+  if(action.includes('error')||action.includes('denied')||action.includes('failed')||action.includes('blocked')||action.includes('escalation_detected'))return'error';
+  if(action.includes('success')||action.includes('doc_write')||action.includes('feishu_api'))return'success';
+  if(action.includes('warning')||action.includes('risk')||action.includes('approval'))return'warning';
+  return'active';
 }
 
-async function runDemo(scenario) {
-  document.querySelectorAll('.demo-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('demoSteps').innerHTML = '';
-  const result = await fetchJSON(`/api/demo/${scenario}`, { method: 'POST' });
-  if (result && result.steps) {
-    result.steps.forEach(s => handleDemoStep(s));
+function runCurrentDemo(){runDemo(currentScenario)}
+async function runAllDemos(){
+  if(demoRunning)return;
+  const order=['normal-delegation','capability-mismatch','token-theft','injection-defense','human-approval','privilege-escalation'];
+  for(const s of order){await runDemo(s);await sleep(1000)}
+  showToast('✓ 全部演示完成！');
+}
+function resetDemo(){
+  stopCanvasAnimation();
+  renderFlowSteps(currentScenario);
+  document.getElementById('audit-stream').innerHTML='';
+  document.getElementById('progress-fill').style.width='0%';
+  document.getElementById('progress-text').textContent='就绪';
+  drawChainCanvas();loadAuditLogs();showToast('已重置');
+}
+
+function showApprovalModal(data){
+  currentApprovalTaskId=data.task_id;
+  const o=document.getElementById('approval-overlay');
+  o.classList.add('show');
+  document.getElementById('approval-desc').textContent=`${data.requesting_agent} → ${data.target_agent}: ${data.requested_capability}`;
+  let remaining=data.timeout_seconds||30;
+  const te=document.getElementById('approval-timer');
+  te.textContent=`剩余 ${remaining} 秒`;
+  if(approvalTimer)clearInterval(approvalTimer);
+  approvalTimer=setInterval(()=>{remaining--;te.textContent=`剩余 ${remaining} 秒`;if(remaining<=0){clearInterval(approvalTimer);resolveApproval(false)}},1000);
+}
+
+async function resolveApproval(approved){
+  if(approvalTimer)clearInterval(approvalTimer);
+  document.getElementById('approval-overlay').classList.remove('show');
+  if(currentApprovalTaskId){
+    try{await fetch(`${API}/approvals/${currentApprovalTaskId}/resolve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved})})}catch(e){}
+    currentApprovalTaskId=null;
   }
-  refreshMetrics();
-  refreshAudit();
-  refreshGraph();
-  refreshAgents();
+  addAuditLog({decision:approved?'ALLOW':'DENY',action_type:'human_approval_result',requesting_agent:'operator',deny_reason:approved?'':'Human approval rejected'});
+  showToast(approved?'✓ 审批已通过':'✗ 审批已拒绝');
+  refreshMetrics();loadAuditLogs();
 }
 
-function handleDemoStep(step) {
-  const container = document.getElementById('demoSteps');
-  const cls = step.action.includes('error') || step.action.includes('denied') || step.action.includes('blocked') || step.action.includes('failed') || step.action.includes('revoked') || step.action.includes('escalation') ? 'error' :
-               step.action.includes('approval') || step.action.includes('warning') ? 'warning' : 'success';
-  const div = document.createElement('div');
-  div.className = `demo-step ${cls}`;
-  let detail = '';
-  if (step.token) { detail = `<div class="demo-step-detail">jti: ${step.token.jti} | scope: ${(step.token.scope||[]).join(', ')}</div>`; renderTokenJSON(step.token); }
-  if (step.delegation) { detail += `<div class="demo-step-detail">delegated_caps: ${(step.delegation.delegated_capabilities||[]).join(', ')} | attenuation: ${step.delegation.attenuation}</div>`; }
-  if (step.error) { detail += `<div class="demo-step-detail" style="color:var(--neon-red)">${step.error}</div>`; }
-  if (step.error_code) { detail += `<div class="demo-step-detail" style="color:var(--neon-amber)">Error: ${step.error_code}</div>`; }
-  if (step.scan_result) { detail += `<div class="demo-step-detail">threats: ${step.scan_result.threat_count} | confidence: ${step.scan_result.confidence}</div>`; }
-  if (step.risk_score !== undefined) { detail += `<div class="demo-step-detail">risk_score: ${step.risk_score}</div>`; }
-  div.innerHTML = `<div class="demo-step-num">${step.step}</div><div><div class="demo-step-text">${step.description}</div>${detail}</div>`;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
+async function exportReport(){
+  try{const r=await fetch(`${API}/export/demo-report`,{method:'POST'});const result=await r.json();if(result.status==='success')showToast(`📄 报告已生成: ${result.filename}`)}catch(e){showToast('导出失败')}
+}
+async function verifyChain(){
+  try{const r=await fetch(`${API}/audit/verify`);const result=await r.json();showToast(result.valid?'✓ 审计链完整':'✗ 审计链断裂')}catch(e){showToast('验证失败')}
 }
 
-function showApprovalModal(data) {
-  currentApprovalTaskId = data.task_id;
-  approvalCountdown = 30;
-  document.getElementById('approvalInfo').textContent = `Agent: ${data.requesting_agent} → ${data.target_agent} | Capability: ${data.requested_capability}`;
-  document.getElementById('approvalTimer').textContent = approvalCountdown;
-  document.getElementById('approvalModal').classList.add('show');
-  if (approvalTimerInterval) clearInterval(approvalTimerInterval);
-  approvalTimerInterval = setInterval(() => {
-    approvalCountdown--;
-    document.getElementById('approvalTimer').textContent = approvalCountdown;
-    if (approvalCountdown <= 0) { clearInterval(approvalTimerInterval); resolveApproval(false); }
-  }, 1000);
+function showToast(msg){
+  const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2200);
 }
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 
-async function resolveApproval(approved) {
-  if (approvalTimerInterval) clearInterval(approvalTimerInterval);
-  document.getElementById('approvalModal').classList.remove('show');
-  if (currentApprovalTaskId) {
-    await fetchJSON(`/api/approvals/${currentApprovalTaskId}/resolve`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ approved })
-    });
-    toast(approved ? '审批已通过' : '审批已拒绝', approved ? 'success' : 'warning');
-    currentApprovalTaskId = null;
-  }
-  refreshAudit();
-  refreshMetrics();
+document.addEventListener('keydown',(e)=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(e.code==='Space'){e.preventDefault();runCurrentDemo()}
+  if(e.code==='KeyR'){e.preventDefault();resetDemo()}
+  if(e.code==='KeyA'){e.preventDefault();runAllDemos()}
+  const numKeys={'Digit1':'normal-delegation','Digit2':'capability-mismatch','Digit3':'token-theft','Digit4':'injection-defense','Digit5':'human-approval','Digit6':'privilege-escalation'};
+  if(numKeys[e.code]){selectScenario(numKeys[e.code])}
+});
+
+function init(){
+  connectWS();renderScenarioList();loadAgents();refreshMetrics();loadAuditLogs();
+  selectScenario('normal-delegation');
+  renderFlowSteps('normal-delegation');
+  setInterval(refreshMetrics,5000);
+  setInterval(loadAuditLogs,10000);
+  setInterval(()=>loadAgents(),15000);
+  window.addEventListener('resize',()=>{if(!animationFrameId)drawChainCanvas()});
 }
-
-async function init() {
-  connectWS();
-  await refreshMetrics();
-  await refreshAgents();
-  await refreshAudit();
-  await refreshGraph();
-  const ds = await fetchJSON('/api/demo-status');
-  if (ds && ds.is_demo_mode) document.getElementById('demoBanner').style.display = 'block';
-  setInterval(refreshMetrics, 5000);
-  setInterval(refreshAudit, 3000);
-  window.addEventListener('resize', drawGraph);
-}
-
 init();
 </script>
 </body>

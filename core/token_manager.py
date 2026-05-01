@@ -21,6 +21,7 @@ class TokenManager:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -105,9 +106,11 @@ class TokenManager:
         task_id: str = "",
         trace_id: str = "",
         signature: str = "",
+        jti: str = "",
     ) -> dict:
         now = time.time()
-        jti = uuid.uuid4().hex
+        if not jti:
+            jti = uuid.uuid4().hex
         expires_at = now + ttl_seconds
 
         if trust_chain is None:

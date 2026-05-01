@@ -22,6 +22,7 @@ class AuthServer:
     SENSITIVE_CAPABILITIES = ["lark:contact:read", "lark:bitable:write"]
     SENSITIVE_READ_THRESHOLD = 100
     HUMAN_APPROVAL_TOKEN_TTL = 300
+    HUMAN_APPROVAL_TIMEOUT = 30
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -38,6 +39,7 @@ class AuthServer:
 
         self._ws_notify = None
         self._agent_key_pairs = {}
+        self._pending_approvals = {}
 
     def _init_db(self):
         conn = self._get_conn()
@@ -64,6 +66,7 @@ class AuthServer:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -117,6 +120,9 @@ class AuthServer:
         if encryption_public_key is None:
             _, pub_pem = self._generate_agent_keypair(agent_id)
             encryption_public_key = pub_pem
+
+        if agent_id not in self._agent_key_pairs:
+            self._generate_agent_keypair(agent_id)
 
         if authentication_schemes is None:
             authentication_schemes = ["mTLS", "Bearer"]
@@ -242,16 +248,12 @@ class AuthServer:
             "trust_score": trust,
             "endpoint_url": agent.get("endpoint_url", ""),
             "authentication_schemes": agent.get("authentication_schemes", ["mTLS", "Bearer"]),
+            "encryption_public_key": agent.get("encryption_public_key", ""),
             "skill_descriptions": skill_descriptions,
             "agent_type": agent["agent_type"],
             "status": agent["status"],
             "created_at": agent["created_at"],
         }
-
-    def get_trust_history(self, agent_id: str, limit: int = 100) -> list:
-        return self.audit_logger.query_logs(
-            requesting_agent=agent_id, limit=limit
-        )
 
     def _check_agent_card_capability_match(
         self, target_agent_id: str, requested_capabilities: list
@@ -378,9 +380,13 @@ class AuthServer:
 
         if risk_score >= 70:
             granted_caps = [c for c in granted_caps if ":read" in c or c.startswith("delegate:")]
-            self.audit_logger.create_risk_event(
-                agent_id, risk_score, "downgrade_to_readonly",
-                json.dumps({"original_caps": capabilities, "downgraded_to": granted_caps}),
+            self.audit_logger.write_log(
+                requesting_agent=agent_id,
+                action_type="risk_downgrade",
+                decision="ALERT",
+                deny_reason=f"Risk score {risk_score} >= 70, downgraded to read-only",
+                risk_score=risk_score,
+                trace_id=trace_id,
             )
 
         session_id = uuid.uuid4().hex[:16]
@@ -388,6 +394,8 @@ class AuthServer:
 
         if not trace_id:
             trace_id = uuid.uuid4().hex[:16]
+
+        jti = uuid.uuid4().hex
 
         baseline_hash = ""
         baseline = self.behavior_analyzer.get_baseline_data(agent_id)
@@ -397,7 +405,7 @@ class AuthServer:
         signature = ""
         if agent_id in self._agent_key_pairs:
             private_key = self._agent_key_pairs[agent_id]
-            sign_data = f"{agent_id}:{','.join(granted_caps)}:{time.time()}".encode()
+            sign_data = f"{agent_id}:{','.join(granted_caps)}:{jti}".encode()
             signature = private_key.sign(
                 sign_data,
                 asym_padding.PSS(
@@ -425,6 +433,7 @@ class AuthServer:
             task_id=task_id or "",
             trace_id=trace_id,
             signature=signature,
+            jti=jti,
         )
 
         self.audit_logger.write_log(
@@ -444,8 +453,6 @@ class AuthServer:
         self.behavior_analyzer.record_observation(
             agent_id, granted_caps, delegation_depth=0
         )
-
-        self.audit_logger.update_delegation_edge(agent_id, agent_id, "ALLOW")
 
         self._notify("token_issued", {
             "agent_id": agent_id,
@@ -467,7 +474,6 @@ class AuthServer:
         delegated_user: str = None,
         one_time: bool = False,
         task_id: str = None,
-        resource: str = None,
         trace_id: str = None,
     ) -> dict:
         verify_result = self.token_manager.verify_token(parent_token)
@@ -509,6 +515,7 @@ class AuthServer:
                 trust_chain_snapshot=parent_trust_chain,
                 trace_id=parent_trace_id,
             )
+            self.audit_logger.update_delegation_edge(parent_agent_id, target_agent_id, "DENY")
             raise PermissionError(
                 f"Target agent card does not support requested capabilities: {card_check['missing']} "
                 f"[ERR_CAPABILITY_MISMATCH]"
@@ -519,7 +526,7 @@ class AuthServer:
             parent_caps, target_name, requested_capabilities
         )
 
-        if not delegation_check["allowed"] and not delegation_check["has_delegate_read"] and not delegation_check["has_delegate_write"]:
+        if not delegation_check["allowed"]:
             self.audit_logger.write_log(
                 requesting_agent=parent_agent_id,
                 action_type="token_delegate",
@@ -531,20 +538,13 @@ class AuthServer:
                 trust_chain_snapshot=parent_trust_chain,
                 trace_id=parent_trace_id,
             )
-
             self.risk_scorer.update_trust_score(parent_agent_id, -10)
             self.audit_logger.update_delegation_edge(parent_agent_id, target_agent_id, "DENY")
-            self.audit_logger.create_risk_event(
-                parent_agent_id, 50.0, "delegation_denied",
-                json.dumps({"target": target_agent_id, "requested": requested_capabilities}),
-            )
-
             self._notify("delegation_denied", {
                 "from": parent_agent_id,
                 "to": target_agent_id,
                 "requested": requested_capabilities,
             })
-
             raise PermissionError(
                 f"[ERR_DELEGATION_DENIED] Agent {parent_agent_id} has no delegation permission for {target_name}. "
                 f"Required: {delegation_check['delegate_read_perm']} or {delegation_check['delegate_write_perm']}"
@@ -554,11 +554,37 @@ class AuthServer:
         effective_requested = [c for c in requested_capabilities if c in delegation_check["allowed"]]
         delegated_caps = [c for c in effective_requested if c in target_registered]
 
+        delegation_perm_expanded = set()
+        for dc in delegation_check["allowed"]:
+            if dc.startswith("delegate:"):
+                parts = dc.split(":")
+                if len(parts) >= 3:
+                    perm_type = parts[-1]
+                    if perm_type == "read":
+                        delegation_perm_expanded.update(c for c in target_registered if ":read" in c)
+                    elif perm_type == "write":
+                        delegation_perm_expanded.update(c for c in target_registered)
+            else:
+                delegation_perm_expanded.add(dc)
+
+        agent_caps = set(target_registered)
+        delegated_set = set(delegated_caps)
+        three_way = delegation_perm_expanded & agent_caps & delegated_set
         if parent_max_scope:
-            delegatable_scope = set(parent_max_scope)
-            for cap in delegation_check["allowed"]:
-                delegatable_scope.add(cap)
-            delegated_caps = [c for c in delegated_caps if c in delegatable_scope]
+            delegate_max = set()
+            for ms in parent_max_scope:
+                if ms.startswith("delegate:"):
+                    parts = ms.split(":")
+                    if len(parts) >= 3:
+                        perm_type = parts[-1]
+                        if perm_type == "read":
+                            delegate_max.update(c for c in target_registered if ":read" in c)
+                        elif perm_type == "write":
+                            delegate_max.update(c for c in target_registered)
+                else:
+                    delegate_max.add(ms)
+            three_way = three_way & delegate_max
+        delegated_caps = sorted(list(three_way))
 
         for cap in delegated_caps:
             if cap not in parent_max_scope and cap not in delegation_check["allowed"]:
@@ -624,13 +650,15 @@ class AuthServer:
 
         if human_approval_required:
             task_id_val = task_id or f"human_approval_{int(time.time())}"
-            self.audit_logger.create_human_approval(
-                task_id=task_id_val,
-                requesting_agent=parent_agent_id,
-                target_agent=target_agent_id,
-                requested_capability=",".join(delegated_caps),
-                session_id=session_id,
-            )
+            self._pending_approvals[task_id_val] = {
+                "task_id": task_id_val,
+                "requesting_agent": parent_agent_id,
+                "target_agent": target_agent_id,
+                "requested_capability": ",".join(delegated_caps),
+                "session_id": session_id,
+                "created_at": time.time(),
+                "status": "PENDING_HUMAN_APPROVAL",
+            }
             self.audit_logger.write_log(
                 requesting_agent=parent_agent_id,
                 action_type="human_approval_required",
@@ -645,10 +673,10 @@ class AuthServer:
                 "requesting_agent": parent_agent_id,
                 "target_agent": target_agent_id,
                 "requested_capability": ",".join(delegated_caps),
-                "timeout_seconds": 30,
+                "timeout_seconds": self.HUMAN_APPROVAL_TIMEOUT,
             })
 
-        ttl = self.HUMAN_APPROVAL_TOKEN_TTL if (one_time or human_approval_required) else 1800 if one_time else 3600
+        ttl = self.HUMAN_APPROVAL_TOKEN_TTL if (one_time or human_approval_required) else 3600
 
         result = self.token_manager.issue_token(
             agent_id=target_agent_id,
@@ -703,6 +731,8 @@ class AuthServer:
         result["delegated_capabilities"] = delegated_caps
         result["trace_id"] = parent_trace_id
         result["human_approval_required"] = human_approval_required
+        if human_approval_required:
+            result["task_id"] = task_id_val
         return result
 
     def verify_token(
@@ -711,8 +741,6 @@ class AuthServer:
         verifier_agent_id: str,
         verifier_secret: str,
         required_capability: str = None,
-        resource: str = None,
-        context: dict = None,
     ) -> dict:
         verifier = self._get_agent(verifier_agent_id)
         if not verifier:
@@ -763,23 +791,21 @@ class AuthServer:
                 raise PermissionError(f"Token lacks required capability: {required_capability} [ERR_CAPABILITY_INSUFFICIENT]")
 
         agent_id = payload.get("agent_id", "")
-        agent = self._get_agent(agent_id)
-        if agent and agent.get("encryption_public_key"):
+        signature_hex = payload.get("signature", "")
+        if signature_hex and agent_id in self._agent_key_pairs:
             try:
-                from cryptography.hazmat.primitives.serialization import load_pem_public_key
-                pub_key = load_pem_public_key(agent["encryption_public_key"].encode())
-                signature_hex = payload.get("signature", "")
-                if signature_hex:
-                    sign_data = f"{agent_id}:{','.join(token_caps)}:{payload.get('issued_at', 0)}".encode()
-                    pub_key.verify(
-                        bytes.fromhex(signature_hex),
-                        sign_data,
-                        asym_padding.PSS(
-                            mgf=asym_padding.MGF1(hashes.SHA256()),
-                            salt_length=asym_padding.PSS.MAX_LENGTH,
-                        ),
-                        hashes.SHA256(),
-                    )
+                server_private_key = self._agent_key_pairs[agent_id]
+                server_public_key = server_private_key.public_key()
+                sign_data = f"{agent_id}:{','.join(token_caps)}:{payload.get('jti', '')}".encode()
+                server_public_key.verify(
+                    bytes.fromhex(signature_hex),
+                    sign_data,
+                    asym_padding.PSS(
+                        mgf=asym_padding.MGF1(hashes.SHA256()),
+                        salt_length=asym_padding.PSS.MAX_LENGTH,
+                    ),
+                    hashes.SHA256(),
+                )
             except Exception:
                 self.audit_logger.write_log(
                     requesting_agent=verifier_agent_id,
@@ -790,6 +816,16 @@ class AuthServer:
                     trace_id=payload.get("trace_id", ""),
                 )
                 raise PermissionError("mTLS signature verification failed [ERR_IDENTITY_UNVERIFIABLE]")
+        elif signature_hex:
+            self.audit_logger.write_log(
+                requesting_agent=verifier_agent_id,
+                action_type="token_verify",
+                decision="DENY",
+                deny_reason="mTLS signing key not found for agent",
+                error_code="ERR_IDENTITY_UNVERIFIABLE",
+                trace_id=payload.get("trace_id", ""),
+            )
+            raise PermissionError("mTLS signing key not found [ERR_IDENTITY_UNVERIFIABLE]")
 
         self.audit_logger.write_log(
             requesting_agent=verifier_agent_id,
@@ -834,7 +870,10 @@ class AuthServer:
     def get_delegation_graph(self) -> dict:
         conn = self._get_conn()
         agents = conn.execute("SELECT agent_id, agent_name, trust_score, status FROM agents").fetchall()
-        edges = conn.execute("SELECT * FROM delegation_edges").fetchall()
+
+        edges_rows = conn.execute(
+            "SELECT source, target, success_count, deny_count, last_decision FROM delegation_edges ORDER BY last_timestamp DESC"
+        ).fetchall()
         conn.close()
 
         nodes = []
@@ -846,9 +885,9 @@ class AuthServer:
                 "status": a["status"],
             })
 
-        edge_list = []
-        for e in edges:
-            edge_list.append({
+        edges = []
+        for e in edges_rows:
+            edges.append({
                 "source": e["source"],
                 "target": e["target"],
                 "success_count": e["success_count"],
@@ -856,4 +895,62 @@ class AuthServer:
                 "last_decision": e["last_decision"],
             })
 
-        return {"nodes": nodes, "edges": edge_list}
+        return {"nodes": nodes, "edges": edges}
+
+    def resolve_approval(self, task_id: str, approved: bool) -> dict:
+        if task_id in self._pending_approvals:
+            approval = self._pending_approvals[task_id]
+            if approved:
+                approval["status"] = "approved"
+                self.audit_logger.write_log(
+                    requesting_agent=approval["requesting_agent"],
+                    action_type="human_approval_result",
+                    decision="ALLOW",
+                    target_agent=approval["target_agent"],
+                    human_approval_required=True,
+                    human_approval_result="APPROVED",
+                )
+            else:
+                approval["status"] = "rejected"
+                session_id = approval.get("session_id", "")
+                if session_id:
+                    token_record = self.token_manager.get_token_by_session(session_id)
+                    if token_record:
+                        self.token_manager.revoke_token(jti=token_record["jti"])
+                self.audit_logger.write_log(
+                    requesting_agent=approval["requesting_agent"],
+                    action_type="human_approval_result",
+                    decision="DENY",
+                    deny_reason="Human approval rejected",
+                    error_code="ERR_HUMAN_REJECTED",
+                    human_approval_required=True,
+                    human_approval_result="REJECTED",
+                )
+            del self._pending_approvals[task_id]
+            self._notify("human_approval_result", {"task_id": task_id, "approved": approved})
+            return {"task_id": task_id, "status": approval["status"]}
+
+        return {"task_id": task_id, "status": "not_found"}
+
+    def check_approval_timeouts(self) -> list:
+        now = time.time()
+        timed_out = []
+        for task_id, approval in list(self._pending_approvals.items()):
+            if now - approval["created_at"] > self.HUMAN_APPROVAL_TIMEOUT:
+                approval["status"] = "timeout_rejected"
+                self.audit_logger.write_log(
+                    requesting_agent=approval["requesting_agent"],
+                    action_type="human_approval_timeout",
+                    decision="DENY",
+                    deny_reason=f"Human approval timed out after {self.HUMAN_APPROVAL_TIMEOUT}s",
+                    error_code="ERR_TIMEOUT_REJECTION",
+                    human_approval_required=True,
+                    human_approval_result="TIMEOUT_REJECTION",
+                )
+                timed_out.append(task_id)
+                del self._pending_approvals[task_id]
+                self._notify("human_approval_result", {"task_id": task_id, "approved": False, "timeout": True})
+        return timed_out
+
+    def get_pending_approvals(self) -> list:
+        return list(self._pending_approvals.values())
