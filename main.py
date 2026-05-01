@@ -304,6 +304,87 @@ async def risk_events(agent_id: str = None, limit: int = 100):
     return auth_server.audit_logger.get_risk_events(agent_id, limit)
 
 
+@app.get("/api/svid/{agent_id}")
+async def get_svid(agent_id: str):
+    result = auth_server.get_svid(agent_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.post("/api/svid/{agent_id}/rotate")
+async def rotate_svid(agent_id: str):
+    try:
+        return auth_server.rotate_svid(agent_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/trust-bundle")
+async def trust_bundle():
+    return auth_server.get_trust_bundle()
+
+
+@app.get("/api/policies")
+async def list_policies():
+    return auth_server.get_all_policies()
+
+
+@app.post("/api/policies/evaluate")
+async def evaluate_policy(request: dict):
+    return auth_server.evaluate_policy(
+        subject_id=request.get("subject_id", ""),
+        action=request.get("action", ""),
+        resource=request.get("resource", ""),
+        context=request.get("context"),
+    )
+
+
+@app.post("/api/policies/reload")
+async def reload_policies():
+    return auth_server.reload_policies()
+
+
+@app.get("/api/circuit-breakers")
+async def circuit_breakers():
+    return auth_server.get_circuit_breaker_states()
+
+
+@app.get("/api/rate-limits")
+async def rate_limits():
+    return auth_server.get_rate_limit_stats()
+
+
+@app.post("/api/nonce/issue")
+async def issue_nonce(request: dict):
+    nonce = auth_server.nonce_manager.issue_nonce(request.get("agent_id", ""))
+    return {"nonce": nonce}
+
+
+@app.post("/api/nonce/consume")
+async def consume_nonce(request: dict):
+    result = auth_server.nonce_manager.consume_nonce(
+        request.get("nonce", ""),
+        request.get("agent_id", ""),
+    )
+    return {"valid": result.valid, "error_code": result.error_code}
+
+
+@app.get("/api/system/capabilities-matrix")
+async def capabilities_matrix():
+    return auth_server.get_capabilities_matrix()
+
+
+@app.get("/api/system/threat-summary")
+async def threat_summary():
+    return auth_server.get_threat_summary()
+
+
+@app.get("/api/system/timeline")
+async def system_timeline(limit: int = 100):
+    return auth_server.get_global_timeline(limit)
+
+
 @app.post("/api/demo/normal-delegation")
 async def demo_normal_delegation():
     import traceback
@@ -781,4 +862,4 @@ if __name__ == "__main__":
             pass
 
     kill_port(PORT)
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="127.0.0.1", port=PORT)

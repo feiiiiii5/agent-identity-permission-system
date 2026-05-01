@@ -8,14 +8,17 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.auth_server import AuthServer
+from core.nonce_manager import NonceManager
 
 
 class TestAuthServerE2E:
     def setup_method(self):
+        NonceManager.reset_instance()
         self.tmp = tempfile.mktemp(suffix=".db")
         self.server = AuthServer(self.tmp)
 
     def teardown_method(self):
+        NonceManager.reset_instance()
         if os.path.exists(self.tmp):
             os.unlink(self.tmp)
 
@@ -133,15 +136,16 @@ class TestAuthServerE2E:
             "agent_test", "TestAgent", "TestAgent",
             ["lark:doc:read"],
         )
-        for _ in range(25):
+        for i in range(25):
             try:
                 self.server.issue_token(
                     agent_id="agent_test",
                     client_secret=agent["client_secret"],
                     capabilities=["lark:doc:read"],
                 )
-            except PermissionError:
-                break
+            except PermissionError as e:
+                if "RATE_LIMITED" in str(e) or "RATE" in str(e).upper():
+                    break
         with pytest.raises(PermissionError) as exc_info:
             self.server.issue_token(
                 agent_id="agent_test",

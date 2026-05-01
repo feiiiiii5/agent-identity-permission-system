@@ -146,11 +146,13 @@ class TestCircuitBreaker:
 class TestNonceManager:
     def setup_method(self):
         from core.nonce_manager import NonceManager
-        NonceManager._instance = None
+        NonceManager.reset_instance()
         self.tmp = tempfile.mktemp(suffix=".db")
         self.nm = NonceManager(self.tmp)
 
     def teardown_method(self):
+        from core.nonce_manager import NonceManager
+        NonceManager.reset_instance()
         if os.path.exists(self.tmp):
             os.unlink(self.tmp)
 

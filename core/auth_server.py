@@ -15,6 +15,12 @@ from core.risk_scorer import RiskScorer
 from core.behavior_analyzer import BehaviorAnalyzer
 from core.session_verifier import SessionVerifier
 from core.privilege_detector import PrivilegeDetector
+from core.svid_manager import SVIDManager
+from core.policy_engine import PolicyEngine
+from core.dpop_verifier import DPoPVerifier
+from core.rate_limiter import SlidingWindowRateLimiter
+from core.circuit_breaker import CircuitBreaker
+from core.nonce_manager import NonceManager
 
 
 class AuthServer:
@@ -36,6 +42,12 @@ class AuthServer:
         self.session_verifier = SessionVerifier()
         self.privilege_detector = PrivilegeDetector(db_path)
         self.injection_scanner = InjectionScanner()
+        self.svid_manager = SVIDManager()
+        self.policy_engine = PolicyEngine()
+        self.dpop_verifier = DPoPVerifier()
+        self.rate_limiter = SlidingWindowRateLimiter(db_path)
+        self.circuit_breaker = CircuitBreaker()
+        self.nonce_manager = NonceManager(db_path)
 
         self._ws_notify = None
         self._agent_key_pairs = {}
@@ -57,9 +69,19 @@ class AuthServer:
                 authentication_schemes TEXT DEFAULT '[]',
                 skill_descriptions TEXT DEFAULT '[]',
                 baseline_capabilities TEXT DEFAULT '[]',
+                spiffe_id TEXT DEFAULT '',
+                svid_expires_at REAL DEFAULT 0,
                 created_at REAL NOT NULL
             );
         """)
+        try:
+            conn.execute("ALTER TABLE agents ADD COLUMN spiffe_id TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE agents ADD COLUMN svid_expires_at REAL DEFAULT 0")
+        except Exception:
+            pass
         conn.commit()
         conn.close()
 
@@ -133,16 +155,19 @@ class AuthServer:
             "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,)
         ).fetchone()
 
+        svid = self.svid_manager.issue_svid(agent_id, agent_type)
+        self.audit_logger.write_svid_event(agent_id, "svid_issued", svid.spiffe_id, svid.expires_at)
+
         if existing:
             conn.execute(
                 """UPDATE agents SET agent_name = ?, agent_type = ?, capabilities = ?,
                    encryption_public_key = ?, endpoint_url = ?,
                    authentication_schemes = ?, skill_descriptions = ?,
-                   baseline_capabilities = ? WHERE agent_id = ?""",
+                   baseline_capabilities = ?, spiffe_id = ?, svid_expires_at = ? WHERE agent_id = ?""",
                 (agent_name, agent_type, json.dumps(capabilities),
                  encryption_public_key, endpoint_url,
                  json.dumps(authentication_schemes), json.dumps(skill_descriptions),
-                 json.dumps(capabilities), agent_id),
+                 json.dumps(capabilities), svid.spiffe_id, svid.expires_at, agent_id),
             )
             conn.commit()
             agent = conn.execute(
@@ -157,12 +182,12 @@ class AuthServer:
                 """INSERT INTO agents
                 (agent_id, agent_name, agent_type, capabilities, client_secret, trust_score,
                  status, encryption_public_key, endpoint_url, authentication_schemes,
-                 skill_descriptions, baseline_capabilities, created_at)
-                VALUES (?, ?, ?, ?, ?, 100.0, 'active', ?, ?, ?, ?, ?, ?)""",
+                 skill_descriptions, baseline_capabilities, spiffe_id, svid_expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?, 100.0, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (agent_id, agent_name, agent_type, json.dumps(capabilities),
                  client_secret, encryption_public_key, endpoint_url,
                  json.dumps(authentication_schemes), json.dumps(skill_descriptions),
-                 json.dumps(capabilities), now),
+                 json.dumps(capabilities), svid.spiffe_id, svid.expires_at, now),
             )
             conn.commit()
             conn.close()
@@ -186,6 +211,8 @@ class AuthServer:
                 "trust_score": 100.0,
                 "status": "active",
                 "encryption_public_key": encryption_public_key,
+                "spiffe_id": svid.spiffe_id,
+                "svid_expires_at": svid.expires_at,
             }
 
     def _get_agent(self, agent_id: str) -> Optional[dict]:
@@ -287,6 +314,39 @@ class AuthServer:
         trace_id: str = None,
         task_description: str = None,
     ) -> dict:
+        rl_result = self.rate_limiter.check_rate_limit(agent_id, "token_issue")
+        if not rl_result.allowed:
+            self.rate_limiter.record_request(agent_id, "token_issue")
+            self.audit_logger.write_log(
+                requesting_agent=agent_id,
+                action_type="token_issue",
+                decision="DENY",
+                deny_reason=f"Rate limit exceeded: {rl_result.current_count}/{rl_result.limit} in {rl_result.window_seconds}s",
+                error_code="ERR_RATE_LIMITED",
+                trace_id=trace_id,
+            )
+            raise PermissionError(
+                f"Rate limit exceeded for {agent_id}: {rl_result.current_count}/{rl_result.limit} requests in {rl_result.window_seconds}s "
+                f"[ERR_RATE_LIMITED]"
+            )
+
+        cb_result = self.circuit_breaker.can_proceed(agent_id)
+        if not cb_result["allowed"]:
+            self.audit_logger.write_log(
+                requesting_agent=agent_id,
+                action_type="token_issue",
+                decision="DENY",
+                deny_reason=f"Circuit breaker open for agent {agent_id}",
+                error_code="ERR_CIRCUIT_OPEN",
+                trace_id=trace_id,
+            )
+            raise PermissionError(
+                f"Circuit breaker is OPEN for {agent_id}, retry after {cb_result.get('recovery_at', 0):.0f} "
+                f"[ERR_CIRCUIT_OPEN]"
+            )
+
+        self.rate_limiter.record_request(agent_id, "token_issue")
+
         agent = self._get_agent(agent_id)
         if not agent:
             raise ValueError(f"Agent {agent_id} not registered")
@@ -299,6 +359,7 @@ class AuthServer:
                 deny_reason="Invalid client_secret",
                 error_code="ERR_AUTH_FAILED",
             )
+            self.circuit_breaker.record_failure(agent_id, "ERR_AUTH_FAILED")
             raise PermissionError("Invalid client_secret [ERR_AUTH_FAILED]")
 
         if agent["status"] != "active":
@@ -335,6 +396,7 @@ class AuthServer:
                 error_code="ERR_NO_CAPABILITY",
                 trace_id=trace_id,
             )
+            self.circuit_breaker.record_failure(agent_id, "ERR_NO_CAPABILITY")
             raise PermissionError("No valid capabilities can be granted [ERR_NO_CAPABILITY]")
 
         escalation = self.privilege_detector.detect_escalation(
@@ -357,6 +419,7 @@ class AuthServer:
                 "escalated": escalation["escalated_capabilities"],
                 "action": "all_tokens_revoked",
             })
+            self.circuit_breaker.record_failure(agent_id, "ERR_PRIVILEGE_ESCALATION")
             raise PermissionError(
                 f"Privilege escalation detected. All active tokens for {agent_id} have been revoked. "
                 f"[ERR_PRIVILEGE_ESCALATION]"
@@ -376,6 +439,7 @@ class AuthServer:
                 trace_id=trace_id,
             )
             self.token_manager.revoke_all_agent_tokens(agent_id)
+            self.circuit_breaker.record_failure(agent_id, "ERR_RISK_TOO_HIGH")
             raise PermissionError(f"Risk score {risk_score} exceeds threshold. Agent frozen. [ERR_RISK_TOO_HIGH]")
 
         if risk_score >= 70:
@@ -461,6 +525,8 @@ class AuthServer:
             "trace_id": trace_id,
             "risk_score": risk_score,
         })
+
+        self.circuit_breaker.record_success(agent_id)
 
         result["trace_id"] = trace_id
         result["risk_score"] = risk_score
@@ -954,3 +1020,83 @@ class AuthServer:
 
     def get_pending_approvals(self) -> list:
         return list(self._pending_approvals.values())
+
+    def get_svid(self, agent_id: str) -> dict:
+        svid = self.svid_manager.get_svid(agent_id)
+        if not svid:
+            return {"error": "SVID not found", "agent_id": agent_id}
+        return {
+            "spiffe_id": svid.spiffe_id,
+            "agent_id": svid.agent_id,
+            "trust_domain": svid.trust_domain,
+            "issued_at": svid.issued_at,
+            "expires_at": svid.expires_at,
+            "serial_number": svid.serial_number,
+        }
+
+    def rotate_svid(self, agent_id: str) -> dict:
+        agent = self._get_agent(agent_id)
+        if not agent:
+            raise ValueError(f"Agent {agent_id} not registered")
+        new_svid = self.svid_manager.rotate_svid(agent_id)
+        self.audit_logger.write_svid_event(agent_id, "svid_rotated", new_svid.spiffe_id, new_svid.expires_at)
+        self._notify("svid_rotated", {"agent_id": agent_id, "spiffe_id": new_svid.spiffe_id})
+        return {
+            "spiffe_id": new_svid.spiffe_id,
+            "agent_id": new_svid.agent_id,
+            "trust_domain": new_svid.trust_domain,
+            "issued_at": new_svid.issued_at,
+            "expires_at": new_svid.expires_at,
+            "serial_number": new_svid.serial_number,
+        }
+
+    def get_trust_bundle(self) -> dict:
+        return self.svid_manager.get_trust_bundle()
+
+    def evaluate_policy(self, subject_id: str, action: str, resource: str, context: dict = None) -> dict:
+        decision = self.policy_engine.evaluate(subject_id, action, resource, context)
+        self.audit_logger.write_policy_decision(
+            subject_id=subject_id,
+            action=action,
+            resource=resource,
+            matched_policy=decision.matched_policy,
+            effect="allow" if decision.allowed else "deny",
+            reason=decision.reason,
+            evaluation_trace=decision.evaluation_trace,
+            context=context or {},
+        )
+        return {
+            "allowed": decision.allowed,
+            "matched_policy": decision.matched_policy,
+            "reason": decision.reason,
+            "applicable_policies": decision.applicable_policies,
+            "evaluation_trace": decision.evaluation_trace,
+        }
+
+    def get_all_policies(self) -> dict:
+        return {"policies": self.policy_engine.get_all_policies()}
+
+    def reload_policies(self) -> dict:
+        return self.policy_engine.reload_policies()
+
+    def get_rate_limit_stats(self) -> dict:
+        agents = self.list_agents()
+        stats = {}
+        for agent in agents:
+            agent_stats = self.rate_limiter.get_agent_rate_stats(agent["agent_id"])
+            if any(v["current_count"] > 0 for v in agent_stats.values()):
+                stats[agent["agent_id"]] = agent_stats
+        return stats
+
+    def get_circuit_breaker_states(self) -> dict:
+        return self.circuit_breaker.get_all_states()
+
+    def get_threat_summary(self) -> dict:
+        return self.audit_logger.get_threat_summary()
+
+    def get_capabilities_matrix(self) -> dict:
+        agents = self.list_agents()
+        return self.audit_logger.get_capabilities_matrix(agents)
+
+    def get_global_timeline(self, limit: int = 100) -> list:
+        return self.audit_logger.get_global_timeline(limit)

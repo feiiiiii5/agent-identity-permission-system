@@ -14,13 +14,17 @@ class NonceManager:
 
     _instance = None
 
+    @classmethod
+    def reset_instance(cls):
+        cls._instance = None
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, db_path: str = None):
-        if hasattr(self, "_initialized"):
+        if hasattr(self, "_initialized") and self._initialized:
             return
         self._initialized = True
         self._issued_nonces = {}
