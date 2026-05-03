@@ -2,14 +2,19 @@ import os
 import time
 import uuid
 import re
+import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timedelta, timezone
+from collections import OrderedDict
 from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtensionOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.backends import default_backend
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,9 +47,12 @@ class AttestationResult:
 
 class SVIDManager:
 
+    MAX_SVIDS = 5000
+
     def __init__(self, trust_domain: str = "agentpass.local", key_dir: str = None):
         self.trust_domain = trust_domain
-        self._svids = {}
+        self._svids = OrderedDict()
+        self._lock = threading.Lock()
         if key_dir is None:
             key_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "keys")
         self.key_dir = key_dir
@@ -63,8 +71,8 @@ class SVIDManager:
                 now = datetime.now(timezone.utc)
                 if ca_cert.not_valid_after_utc > now:
                     return ca_key, ca_cert
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to load CA from disk, regenerating: %s", e)
         ca_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
@@ -82,8 +90,8 @@ class SVIDManager:
                 f.write(key_pem)
             with open(ca_cert_path, "wb") as f:
                 f.write(cert_pem)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to persist CA to disk: %s", e)
         return ca_key, ca_cert
 
     def _generate_ca_cert(self):
@@ -165,7 +173,11 @@ class SVIDManager:
             serial_number=str(serial_number),
         )
 
-        self._svids[agent_id] = svid
+        with self._lock:
+            self._svids[agent_id] = svid
+            while len(self._svids) > self.MAX_SVIDS:
+                self._svids.popitem(last=False)
+
         return svid
 
     def verify_svid(self, cert_pem: str) -> SVIDVerifyResult:
@@ -180,7 +192,7 @@ class SVIDManager:
         except Exception as e:
             return SVIDVerifyResult(valid=False, error=f"Certificate verification failed: {e}")
 
-        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        now = datetime.now(timezone.utc)
         if cert.not_valid_after_utc < now:
             return SVIDVerifyResult(valid=False, error="Certificate expired")
 
@@ -202,10 +214,12 @@ class SVIDManager:
         return SVIDVerifyResult(valid=True, spiffe_id=spiffe_id, agent_id=agent_id)
 
     def get_svid(self, agent_id: str) -> Optional[SVID]:
-        return self._svids.get(agent_id)
+        with self._lock:
+            return self._svids.get(agent_id)
 
     def rotate_svid(self, agent_id: str) -> SVID:
-        old = self._svids.get(agent_id)
+        with self._lock:
+            old = self._svids.get(agent_id)
         agent_type = ""
         if old:
             parts = old.spiffe_id.split("/")
@@ -248,4 +262,3 @@ class SVIDManager:
             spiffe_id=svid.spiffe_id,
             attestation_token=token,
         )
-

@@ -3,7 +3,13 @@ import time
 import uuid
 import hashlib
 import sqlite3
+import logging
+import threading
 from typing import Optional
+
+from core.db_pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 GENESIS_HASH = "0" * 64
@@ -15,14 +21,17 @@ class AuditLogger:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
+        self._last_verified_id = 0
+        self._last_verified_hash = GENESIS_HASH
+        self._write_lock = threading.Lock()
         self._init_db()
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -128,7 +137,7 @@ class AuditLogger:
             );
         """)
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def _get_last_hash(self, conn) -> str:
         row = conn.execute(
@@ -200,38 +209,40 @@ class AuditLogger:
 
         conn = self._get_conn()
         try:
-            prev_hash = self._get_last_hash(conn)
-            log_hash = hashlib.sha256(
-                (prev_hash + record_content).encode("utf-8")
-            ).hexdigest()
+            with self._write_lock:
+                prev_hash = self._get_last_hash(conn)
+                log_hash = hashlib.sha256(
+                    (prev_hash + record_content).encode("utf-8")
+                ).hexdigest()
 
-            conn.execute(
-                """INSERT INTO audit_logs
-                (log_id, prev_log_hash, log_hash, record_content, timestamp,
-                 action_type, requesting_agent, target_agent, requested_capability,
-                 granted_capabilities, denied_capabilities, delegated_user,
-                 trust_chain_snapshot, attenuation_chain, decision, deny_reason,
-                 risk_score, injection_detected, privilege_escalation_detected,
-                 session_fingerprint, human_approval_required, human_approval_result,
-                 error_code, trace_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    log_id, prev_hash, log_hash, record_content, now,
-                    action_type, requesting_agent, target_agent, requested_capability,
-                    json.dumps(granted_capabilities), json.dumps(denied_capabilities),
-                    delegated_user, json.dumps(trust_chain_snapshot),
-                    json.dumps(attenuation_chain), decision, deny_reason or decision_reason,
-                    risk_score, int(injection_detected), int(privilege_escalation_detected),
-                    session_fingerprint, int(human_approval_required), human_approval_result,
-                    error_code, trace_id,
-                ),
-            )
-            conn.commit()
-        except Exception:
+                conn.execute(
+                    """INSERT INTO audit_logs
+                    (log_id, prev_log_hash, log_hash, record_content, timestamp,
+                     action_type, requesting_agent, target_agent, requested_capability,
+                     granted_capabilities, denied_capabilities, delegated_user,
+                     trust_chain_snapshot, attenuation_chain, decision, deny_reason,
+                     risk_score, injection_detected, privilege_escalation_detected,
+                     session_fingerprint, human_approval_required, human_approval_result,
+                     error_code, trace_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        log_id, prev_hash, log_hash, record_content, now,
+                        action_type, requesting_agent, target_agent, requested_capability,
+                        json.dumps(granted_capabilities), json.dumps(denied_capabilities),
+                        delegated_user, json.dumps(trust_chain_snapshot),
+                        json.dumps(attenuation_chain), decision, deny_reason or decision_reason,
+                        risk_score, int(injection_detected), int(privilege_escalation_detected),
+                        session_fingerprint, int(human_approval_required), human_approval_result,
+                        error_code, trace_id,
+                    ),
+                )
+                conn.commit()
+        except Exception as e:
             conn.rollback()
+            logger.error("Failed to write audit log: %s", e)
             raise
         finally:
-            conn.close()
+            self._return_conn(conn)
 
         return {"log_id": log_id, "log_hash": log_hash, "decision": decision}
 
@@ -274,7 +285,7 @@ class AuditLogger:
         params.extend([limit, offset])
 
         rows = conn.execute(query, params).fetchall()
-        conn.close()
+        self._return_conn(conn)
 
         results = []
         for row in rows:
@@ -294,7 +305,7 @@ class AuditLogger:
             "SELECT id, log_id, prev_log_hash, log_hash, record_content, timestamp "
             "FROM audit_logs ORDER BY id ASC"
         ).fetchall()
-        conn.close()
+        self._return_conn(conn)
 
         if not rows:
             return {"valid": True, "total_records": 0, "message": "No records to verify"}
@@ -303,6 +314,8 @@ class AuditLogger:
         for row in rows:
             row = dict(row)
             if row["prev_log_hash"] != prev_hash:
+                self._last_verified_id = 0
+                self._last_verified_hash = GENESIS_HASH
                 return {
                     "valid": False,
                     "error_code": "CHAIN_BROKEN",
@@ -315,6 +328,8 @@ class AuditLogger:
                 (prev_hash + row["record_content"]).encode("utf-8")
             ).hexdigest()
             if row["log_hash"] != expected_hash:
+                self._last_verified_id = 0
+                self._last_verified_hash = GENESIS_HASH
                 return {
                     "valid": False,
                     "error_code": "CHAIN_BROKEN",
@@ -325,7 +340,71 @@ class AuditLogger:
                 }
             prev_hash = row["log_hash"]
 
+        self._last_verified_id = rows[-1]["id"]
+        self._last_verified_hash = prev_hash
         return {"valid": True, "total_records": len(rows), "last_hash": prev_hash}
+
+    def verify_integrity_incremental(self) -> dict:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, log_id, prev_log_hash, log_hash, record_content, timestamp "
+            "FROM audit_logs WHERE id > ? ORDER BY id ASC",
+            (self._last_verified_id,),
+        ).fetchall()
+        total_count = conn.execute("SELECT COUNT(*) as cnt FROM audit_logs").fetchone()["cnt"]
+        self._return_conn(conn)
+
+        if not rows:
+            return {
+                "valid": True,
+                "total_records": total_count,
+                "verified_increment": 0,
+                "last_verified_id": self._last_verified_id,
+                "message": "No new records since last verification",
+            }
+
+        prev_hash = self._last_verified_hash
+        if self._last_verified_id == 0 and rows:
+            prev_hash = GENESIS_HASH
+
+        for row in rows:
+            row = dict(row)
+            if row["prev_log_hash"] != prev_hash:
+                self._last_verified_id = 0
+                self._last_verified_hash = GENESIS_HASH
+                return {
+                    "valid": False,
+                    "error_code": "CHAIN_BROKEN",
+                    "total_records": total_count,
+                    "broken_at_id": row["id"],
+                    "broken_at_timestamp": row["timestamp"],
+                    "message": f"Chain broken at record {row['id']}",
+                }
+            expected_hash = hashlib.sha256(
+                (prev_hash + row["record_content"]).encode("utf-8")
+            ).hexdigest()
+            if row["log_hash"] != expected_hash:
+                self._last_verified_id = 0
+                self._last_verified_hash = GENESIS_HASH
+                return {
+                    "valid": False,
+                    "error_code": "CHAIN_BROKEN",
+                    "total_records": total_count,
+                    "broken_at_id": row["id"],
+                    "broken_at_timestamp": row["timestamp"],
+                    "message": f"Hash mismatch at record {row['id']}",
+                }
+            prev_hash = row["log_hash"]
+
+        self._last_verified_id = rows[-1]["id"]
+        self._last_verified_hash = prev_hash
+        return {
+            "valid": True,
+            "total_records": total_count,
+            "verified_increment": len(rows),
+            "last_verified_id": self._last_verified_id,
+            "last_hash": prev_hash,
+        }
 
     def get_all_trace_ids(self, limit: int = 50) -> list:
         conn = self._get_conn()
@@ -342,7 +421,7 @@ class AuditLogger:
             LIMIT ?""",
             (limit,),
         ).fetchall()
-        conn.close()
+        self._return_conn(conn)
 
         results = []
         for row in rows:
@@ -357,7 +436,7 @@ class AuditLogger:
             "SELECT * FROM audit_logs WHERE trace_id = ? ORDER BY id ASC",
             (trace_id,),
         ).fetchall()
-        conn.close()
+        self._return_conn(conn)
 
         steps = []
         for row in rows:
@@ -393,7 +472,7 @@ class AuditLogger:
         )
         conn.commit()
         alert_id = cursor.lastrowid
-        conn.close()
+        self._return_conn(conn)
 
         return {"alert_id": alert_id, "alert_type": alert_type, "severity": severity}
 
@@ -409,7 +488,7 @@ class AuditLogger:
                 "SELECT * FROM security_alerts ORDER BY timestamp DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         return [dict(r) for r in rows]
 
     def get_risk_events(self, agent_id: str = None, limit: int = 100) -> list:
@@ -424,7 +503,7 @@ class AuditLogger:
                 "SELECT * FROM risk_events ORDER BY timestamp DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         return [dict(r) for r in rows]
 
     def create_risk_event(
@@ -440,7 +519,7 @@ class AuditLogger:
         )
         conn.commit()
         event_id = cursor.lastrowid
-        conn.close()
+        self._return_conn(conn)
         return {"event_id": event_id, "agent_id": agent_id, "risk_score": risk_score}
 
     def create_human_approval(
@@ -462,9 +541,9 @@ class AuditLogger:
             )
             conn.commit()
         except sqlite3.IntegrityError:
-            conn.close()
+            self._return_conn(conn)
             return {"task_id": task_id, "status": "already_exists"}
-        conn.close()
+        self._return_conn(conn)
         return {
             "task_id": task_id,
             "status": "pending",
@@ -478,7 +557,7 @@ class AuditLogger:
         rows = conn.execute(
             "SELECT * FROM human_approvals WHERE status = 'pending' ORDER BY created_at DESC"
         ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         return [dict(r) for r in rows]
 
     def resolve_human_approval(self, task_id: str, approved: bool) -> dict:
@@ -490,7 +569,7 @@ class AuditLogger:
             (status, now, status, task_id),
         )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
         if not approved:
             self.write_log(
@@ -533,7 +612,7 @@ class AuditLogger:
             timed_out.append(r["task_id"])
 
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
         return timed_out
 
     def update_delegation_edge(
@@ -565,37 +644,38 @@ class AuditLogger:
                 (source, target, success, deny, decision, now),
             )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def get_system_metrics(self) -> dict:
         conn = self._get_conn()
+        now = time.time()
 
         agent_count = conn.execute("SELECT COUNT(*) as cnt FROM agents").fetchone()["cnt"]
-        active_tokens = conn.execute(
-            "SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ?",
-            (time.time(),),
-        ).fetchone()["cnt"]
-        revoked_tokens = conn.execute(
-            "SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 1"
-        ).fetchone()["cnt"]
-        total_logs = conn.execute("SELECT COUNT(*) as cnt FROM audit_logs").fetchone()["cnt"]
-        allow_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM audit_logs WHERE decision = 'ALLOW'"
-        ).fetchone()["cnt"]
-        deny_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM audit_logs WHERE decision = 'DENY'"
-        ).fetchone()["cnt"]
-        alert_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM audit_logs WHERE decision = 'ALERT'"
-        ).fetchone()["cnt"]
-        injection_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM audit_logs WHERE injection_detected = 1"
-        ).fetchone()["cnt"]
+        token_stats = conn.execute(
+            "SELECT "
+            "  SUM(CASE WHEN is_revoked = 0 AND expires_at > ? THEN 1 ELSE 0 END) as active, "
+            "  SUM(CASE WHEN is_revoked = 1 THEN 1 ELSE 0 END) as revoked "
+            "FROM tokens",
+            (now,),
+        ).fetchone()
+        active_tokens = token_stats["active"] or 0
+        revoked_tokens = token_stats["revoked"] or 0
+
+        audit_stats = conn.execute(
+            "SELECT "
+            "  COUNT(*) as total_logs, "
+            "  SUM(CASE WHEN decision = 'ALLOW' THEN 1 ELSE 0 END) as allow_count, "
+            "  SUM(CASE WHEN decision = 'DENY' THEN 1 ELSE 0 END) as deny_count, "
+            "  SUM(CASE WHEN decision = 'ALERT' THEN 1 ELSE 0 END) as alert_count, "
+            "  SUM(CASE WHEN injection_detected = 1 THEN 1 ELSE 0 END) as injection_count "
+            "FROM audit_logs"
+        ).fetchone()
+
         unack_alerts = conn.execute(
             "SELECT COUNT(*) as cnt FROM security_alerts WHERE acknowledged = 0"
         ).fetchone()["cnt"]
 
-        conn.close()
+        self._return_conn(conn)
 
         return {
             "agents": {"total": agent_count},
@@ -605,11 +685,11 @@ class AuditLogger:
                 "total": active_tokens + revoked_tokens,
             },
             "audit": {
-                "total_logs": total_logs,
-                "allow_count": allow_count,
-                "deny_count": deny_count,
-                "alert_count": alert_count,
-                "injection_count": injection_count,
+                "total_logs": audit_stats["total_logs"] or 0,
+                "allow_count": audit_stats["allow_count"] or 0,
+                "deny_count": audit_stats["deny_count"] or 0,
+                "alert_count": audit_stats["alert_count"] or 0,
+                "injection_count": audit_stats["injection_count"] or 0,
             },
             "security": {
                 "unacknowledged_alerts": unack_alerts,
@@ -638,10 +718,11 @@ class AuditLogger:
                  json.dumps(evaluation_trace), json.dumps(context)),
             )
             conn.commit()
-        except Exception:
+        except Exception as e:
             conn.rollback()
+            logger.error("Failed to record policy evaluation: %s", e)
         finally:
-            conn.close()
+            self._return_conn(conn)
         return {"timestamp": now, "subject_id": subject_id, "effect": effect}
 
     def get_policy_decisions(self, limit: int = 50) -> list:
@@ -650,7 +731,7 @@ class AuditLogger:
             "SELECT * FROM policy_decisions ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         results = []
         for row in rows:
             r = dict(row)
@@ -677,10 +758,11 @@ class AuditLogger:
                 (now, agent_id, event_type, spiffe_id, expires_at),
             )
             conn.commit()
-        except Exception:
+        except Exception as e:
             conn.rollback()
+            logger.error("Failed to record SVID event: %s", e)
         finally:
-            conn.close()
+            self._return_conn(conn)
         return {"timestamp": now, "agent_id": agent_id, "event_type": event_type}
 
     def get_threat_summary(self) -> dict:
@@ -722,7 +804,7 @@ class AuditLogger:
         critical_count = len(privilege_events) + len(token_theft_events)
         high_count = len(injection_events) + len(rate_limit_events)
 
-        conn.close()
+        self._return_conn(conn)
 
         return {
             "injection_events": injection_events,
@@ -771,7 +853,7 @@ class AuditLogger:
             r["requesting_agent"] = r.pop("agent_id", "")
             events.append(r)
 
-        conn.close()
+        self._return_conn(conn)
 
         events.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
         return events[:limit]
@@ -808,5 +890,45 @@ class AuditLogger:
             (alert_id,),
         )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
         return {"alert_id": alert_id, "acknowledged": True}
+
+    def get_risk_trend(self, agent_id: str, window_minutes: int = 60) -> list:
+        now = time.time()
+        window_start = now - window_minutes * 60
+        bucket_size = 300
+        buckets = {}
+        num_buckets = (window_minutes * 60) // bucket_size
+        for i in range(num_buckets):
+            bucket_start = window_start + i * bucket_size
+            bucket_end = bucket_start + bucket_size
+            bucket_key = int(bucket_start)
+            buckets[bucket_key] = {"start": bucket_start, "end": bucket_end, "scores": [], "count": 0}
+
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT timestamp, risk_score FROM audit_logs WHERE requesting_agent = ? AND timestamp > ? AND risk_score > 0 ORDER BY timestamp ASC",
+            (agent_id, window_start),
+        ).fetchall()
+        self._return_conn(conn)
+
+        for row in rows:
+            ts = row["timestamp"]
+            score = row["risk_score"]
+            bucket_key = int((ts - window_start) // bucket_size) * bucket_size + int(window_start)
+            if bucket_key in buckets:
+                buckets[bucket_key]["scores"].append(score)
+                buckets[bucket_key]["count"] += 1
+
+        trend = []
+        for bucket_key in sorted(buckets.keys()):
+            b = buckets[bucket_key]
+            avg_score = sum(b["scores"]) / len(b["scores"]) if b["scores"] else 0
+            trend.append({
+                "timestamp": b["start"],
+                "time_label": time.strftime("%H:%M", time.localtime(b["start"])),
+                "avg_risk_score": round(avg_score, 1),
+                "max_risk_score": max(b["scores"]) if b["scores"] else 0,
+                "event_count": b["count"],
+            })
+        return trend

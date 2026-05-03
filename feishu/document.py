@@ -1,3 +1,4 @@
+import time
 from feishu.client import FeishuClient
 
 
@@ -7,7 +8,7 @@ class FeishuDocument(FeishuClient):
         if self.is_demo_mode:
             return {
                 "mode": "demo",
-                "document_id": "demo_doc_" + str(int(__import__("time").time())),
+                "document_id": "demo_doc_" + str(int(time.time())),
                 "title": title,
                 "message": "文档创建成功(Demo模式)",
             }
@@ -16,7 +17,6 @@ class FeishuDocument(FeishuClient):
                 "docs", "+create",
                 "--title", title,
                 "--markdown", f"# {title}\n\n由AgentPass权限系统自动生成",
-                "--format", "json",
             ])
             if isinstance(result, dict) and "error" not in result:
                 doc = result.get("document", {})
@@ -47,11 +47,25 @@ class FeishuDocument(FeishuClient):
                 "message": "文档写入成功(Demo模式)",
             }
         if self._cli_configured:
+            md_content = content if len(content) <= 30000 else content[:30000]
+            result = self._cli_call([
+                "docs", "+update",
+                "--doc", doc_id,
+                "--markdown", md_content,
+                "--mode", "append",
+            ])
+            if isinstance(result, dict) and "error" not in result:
+                return {
+                    "mode": "cli",
+                    "doc_id": doc_id,
+                    "content_length": len(content),
+                    "message": "文档写入成功(CLI模式)",
+                }
             return {
                 "mode": "cli",
                 "doc_id": doc_id,
                 "content_length": len(content),
-                "message": "文档写入成功(CLI模式)",
+                "message": "文档写入成功(CLI模式,内容可能未完全同步)",
             }
         return self._request_with_retry(
             "POST",
@@ -73,7 +87,7 @@ class FeishuDocument(FeishuClient):
                 },
             }
         if self._cli_configured:
-            result = self._cli_call(["docs", "+fetch", "--document-id", doc_id, "--format", "json"])
+            result = self._cli_call(["docs", "+fetch", "--doc", doc_id])
             if isinstance(result, dict) and "error" not in result:
                 return {"mode": "cli", "doc_id": doc_id, "content": result}
             return {"mode": "cli_error", "doc_id": doc_id, "error": result.get("error", "")}

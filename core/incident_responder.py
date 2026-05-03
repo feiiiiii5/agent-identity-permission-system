@@ -1,7 +1,12 @@
 import json
 import time
-import sqlite3
+import logging
+import threading
 from typing import Optional
+from collections import OrderedDict
+from core.db_pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 class IncidentResponder:
@@ -53,11 +58,16 @@ class IncidentResponder:
         },
     ]
 
-    def __init__(self, db_path: str):
+    MAX_LAST_ACTION_ENTRIES = 5000
+
+    def __init__(self, db_path: str = "", ws_notify=None):
         self.db_path = db_path
-        self._init_db()
-        self._last_action_time = {}
-        self._ws_notify = None
+        self._pool = get_pool(db_path) if db_path else None
+        if self._pool:
+            self._init_db()
+        self._ws_notify = ws_notify
+        self._last_action_time = OrderedDict()
+        self._lock = threading.Lock()
 
     def _init_db(self):
         conn = self._get_conn()
@@ -79,13 +89,14 @@ class IncidentResponder:
             CREATE INDEX IF NOT EXISTS idx_incidents_agent ON incidents(agent_id);
         """)
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        if conn and self._pool:
+            self._pool.return_connection(conn)
 
     def set_ws_notify(self, func):
         self._ws_notify = func
@@ -94,8 +105,8 @@ class IncidentResponder:
         if self._ws_notify:
             try:
                 self._ws_notify(event_type, data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("WebSocket notification failed: %s", e)
 
     def _check_cooldown(self, rule: dict, agent_id: str) -> bool:
         key = f"{rule['trigger_type']}:{agent_id}"
@@ -118,7 +129,7 @@ class IncidentResponder:
         )
         conn.commit()
         incident_id = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
-        conn.close()
+        self._return_conn(conn)
 
         auto_action = None
         for rule in self.AUTO_RESPONSE_RULES:
@@ -128,6 +139,8 @@ class IncidentResponder:
                         auto_action = rule["action"]
                         key = f"{rule['trigger_type']}:{agent_id}"
                         self._last_action_time[key] = now
+                        while len(self._last_action_time) > self.MAX_LAST_ACTION_ENTRIES:
+                            self._last_action_time.popitem(last=False)
                         break
 
         result = {
@@ -153,7 +166,7 @@ class IncidentResponder:
             conn = self._get_conn()
             conn.execute("UPDATE agents SET status = 'frozen' WHERE agent_id = ?", (agent_id,))
             conn.commit()
-            conn.close()
+            self._return_conn(conn)
             result = auth_server.token_manager.revoke_all_agent_tokens(agent_id)
             auth_server.circuit_breaker.record_failure(agent_id, "AUTO_FREEZE")
             self._notify("auto_response", {"action": action, "agent_id": agent_id})
@@ -191,7 +204,7 @@ class IncidentResponder:
         )
         conn.commit()
         resolved = cursor.rowcount > 0
-        conn.close()
+        self._return_conn(conn)
         return {"incident_id": incident_id, "resolved": resolved}
 
     def get_open_incidents(self, agent_id: str = None, limit: int = 50) -> list:
@@ -206,7 +219,7 @@ class IncidentResponder:
                 "SELECT * FROM incidents WHERE status = 'open' ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         return [dict(r) for r in rows]
 
     def get_incident_stats(self) -> dict:
@@ -220,7 +233,7 @@ class IncidentResponder:
         by_type = {}
         for row in conn.execute("SELECT incident_type, COUNT(*) as cnt FROM incidents GROUP BY incident_type").fetchall():
             by_type[row["incident_type"]] = row["cnt"]
-        conn.close()
+        self._return_conn(conn)
         return {
             "total": total,
             "open": open_count,
@@ -273,10 +286,10 @@ class IncidentResponder:
             al = AuditLogger(self.db_path)
             integrity = al.verify_integrity()
             audit_integrity = integrity.get("valid", False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Audit integrity check failed: %s", e)
 
-        conn.close()
+        self._return_conn(conn)
 
         compliance_score = 100
         if frozen_agents > 0:

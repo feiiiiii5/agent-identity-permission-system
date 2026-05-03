@@ -1,9 +1,11 @@
 import time
 import uuid
 import hashlib
+import threading
 import jwt as pyjwt
 from dataclasses import dataclass
 from typing import Optional
+from collections import OrderedDict
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding as asym_padding
 
@@ -19,11 +21,15 @@ class DPoPResult:
 
 class DPoPVerifier:
 
+    MAX_USED_JTIS = 10000
+    MAX_KEY_BINDINGS = 5000
+
     def __init__(self):
-        self._used_jti = {}
-        self._token_key_bindings = {}
+        self._used_jti = OrderedDict()
+        self._token_key_bindings = OrderedDict()
         self._cleanup_interval = 300
         self._last_cleanup = time.time()
+        self._lock = threading.Lock()
 
     def _cleanup(self):
         now = time.time()
@@ -66,7 +72,8 @@ class DPoPVerifier:
         access_token: str = None,
         max_age_seconds: int = 60,
     ) -> DPoPResult:
-        self._cleanup()
+        with self._lock:
+            self._cleanup()
 
         try:
             public_key = serialization.load_pem_public_key(public_key_pem.encode())
@@ -92,9 +99,10 @@ class DPoPVerifier:
             return DPoPResult(valid=False, error_code="DPOP_MISSING_JTI",
                               error_message="Proof must contain jti")
 
-        if jti in self._used_jti:
-            return DPoPResult(valid=False, error_code="DPOP_REPLAY_DETECTED",
-                              error_message=f"jti {jti[:8]}... already used")
+        with self._lock:
+            if jti in self._used_jti:
+                return DPoPResult(valid=False, error_code="DPOP_REPLAY_DETECTED",
+                                  error_message=f"jti {jti[:8]}... already used")
 
         proof_htm = payload.get("htm", "")
         if proof_htm.upper() != htm.upper():
@@ -118,17 +126,24 @@ class DPoPVerifier:
                 return DPoPResult(valid=False, error_code="DPOP_ATH_MISMATCH",
                                   error_message="Token hash mismatch")
 
-        self._used_jti[jti] = time.time()
+        with self._lock:
+            self._used_jti[jti] = time.time()
+            while len(self._used_jti) > self.MAX_USED_JTIS:
+                self._used_jti.popitem(last=False)
 
         return DPoPResult(valid=True, jti=jti)
 
     def bind_token_to_key(self, jti: str, public_key_thumbprint: str) -> bool:
-        self._token_key_bindings[jti] = public_key_thumbprint
+        with self._lock:
+            self._token_key_bindings[jti] = public_key_thumbprint
+            while len(self._token_key_bindings) > self.MAX_KEY_BINDINGS:
+                self._token_key_bindings.popitem(last=False)
         return True
 
     def verify_token_binding(self, jti: str, public_key_pem: str) -> bool:
         thumbprint = hashlib.sha256(public_key_pem.encode()).hexdigest()[:32]
-        bound = self._token_key_bindings.get(jti)
+        with self._lock:
+            bound = self._token_key_bindings.get(jti)
         if not bound:
             return True
         return bound == thumbprint

@@ -2,8 +2,11 @@ import os
 import re
 import time
 import fnmatch
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,8 +47,8 @@ class PolicyEngine:
                             if "conditions" not in p:
                                 p["conditions"] = {}
                             self._policies.append(p)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to parse policy file %s: %s", pf, e)
         self._policies.sort(key=lambda x: -x.get("priority", 0))
 
     def reload_policies(self):

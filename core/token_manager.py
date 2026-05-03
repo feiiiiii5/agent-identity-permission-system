@@ -3,11 +3,16 @@ import os
 import time
 import uuid
 import hashlib
+import logging
 import sqlite3
 from typing import Optional
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
 import jwt
+
+from core.db_pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 class TokenManager:
@@ -16,6 +21,7 @@ class TokenManager:
 
     def __init__(self, db_path: str, key_dir: str = None):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
         if key_dir is None:
             key_dir = os.path.join(os.path.dirname(db_path), "keys")
         self.key_dir = key_dir
@@ -24,11 +30,10 @@ class TokenManager:
         self._ensure_rsa_key()
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -66,7 +71,7 @@ class TokenManager:
             CREATE INDEX IF NOT EXISTS idx_tokens_revoked ON tokens(is_revoked);
         """)
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def _ensure_rsa_key(self):
         priv_path = os.path.join(self.key_dir, "token_private.pem")
@@ -78,8 +83,8 @@ class TokenManager:
                 with open(pub_path, "rb") as f:
                     self.public_key = serialization.load_pem_public_key(f.read())
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to load existing key pair, generating new: %s", e)
         self.private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
@@ -99,8 +104,8 @@ class TokenManager:
                 f.write(priv_pem)
             with open(pub_path, "wb") as f:
                 f.write(pub_pem)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to persist key pair to disk: %s", e)
 
     def sign_token(self, payload: dict) -> str:
         now = time.time()
@@ -202,7 +207,7 @@ class TokenManager:
             ),
         )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
         return {
             "jti": jti,
@@ -221,7 +226,7 @@ class TokenManager:
     def get_token(self, jti: str) -> Optional[dict]:
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM tokens WHERE jti = ?", (jti,)).fetchone()
-        conn.close()
+        self._return_conn(conn)
         if not row:
             return None
         return dict(row)
@@ -253,7 +258,7 @@ class TokenManager:
             "UPDATE tokens SET use_count = use_count + 1 WHERE jti = ?", (jti,)
         )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
         return {
             "valid": True,
@@ -269,7 +274,7 @@ class TokenManager:
             "risk_score_at_issuance": payload.get("risk_score_at_issuance", 0.0),
         }
 
-    def revoke_token(self, jti: str = None, token_str: str = None) -> dict:
+    def revoke_token(self, jti: str = None, token_str: str = None, cascade: bool = True) -> dict:
         if token_str and not jti:
             sig_result = self.verify_signature(token_str)
             if sig_result["valid"]:
@@ -288,9 +293,36 @@ class TokenManager:
         )
         conn.commit()
         affected = cursor.rowcount
-        conn.close()
+        self._return_conn(conn)
 
-        return {"revoked": affected > 0, "jti": jti, "revoked_at": now}
+        cascade_revoked = []
+        if cascade:
+            cascade_revoked = self._cascade_revoke_children(jti, now)
+
+        result = {"revoked": affected > 0, "jti": jti, "revoked_at": now}
+        if cascade_revoked:
+            result["cascade_revoked"] = cascade_revoked
+            result["cascade_count"] = len(cascade_revoked)
+        return result
+
+    def _cascade_revoke_children(self, parent_jti: str, revoked_at: float) -> list:
+        conn = self._get_conn()
+        children = conn.execute(
+            "SELECT jti, agent_id FROM tokens WHERE parent_jti = ? AND is_revoked = 0",
+            (parent_jti,),
+        ).fetchall()
+        revoked = []
+        for child in children:
+            conn.execute(
+                "UPDATE tokens SET is_revoked = 1, revoked_at = ? WHERE jti = ? AND is_revoked = 0",
+                (revoked_at, child["jti"]),
+            )
+            revoked.append({"jti": child["jti"], "agent_id": child["agent_id"]})
+            grand_children = self._cascade_revoke_children(child["jti"], revoked_at)
+            revoked.extend(grand_children)
+        conn.commit()
+        self._return_conn(conn)
+        return revoked
 
     def revoke_all_agent_tokens(self, agent_id: str) -> dict:
         conn = self._get_conn()
@@ -301,7 +333,7 @@ class TokenManager:
         )
         conn.commit()
         affected = cursor.rowcount
-        conn.close()
+        self._return_conn(conn)
         return {"revoked_count": affected, "agent_id": agent_id}
 
     def get_active_tokens_count(self) -> int:
@@ -310,7 +342,7 @@ class TokenManager:
             "SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ?",
             (time.time(),),
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
         return row["cnt"] if row else 0
 
     def get_revoked_tokens_count(self) -> int:
@@ -318,13 +350,13 @@ class TokenManager:
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 1"
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
         return row["cnt"] if row else 0
 
     def get_total_tokens_count(self) -> int:
         conn = self._get_conn()
         row = conn.execute("SELECT COUNT(*) as cnt FROM tokens").fetchone()
-        conn.close()
+        self._return_conn(conn)
         return row["cnt"] if row else 0
 
     def get_token_by_session(self, session_id: str) -> Optional[dict]:
@@ -333,7 +365,7 @@ class TokenManager:
             "SELECT * FROM tokens WHERE session_id = ? AND is_revoked = 0 AND expires_at > ? ORDER BY issued_at DESC LIMIT 1",
             (session_id, time.time()),
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
         return dict(row) if row else None
 
     def cleanup_expired(self, max_age_days: int = 7) -> dict:
@@ -346,14 +378,14 @@ class TokenManager:
         )
         conn.commit()
         deleted = cursor.rowcount
-        conn.close()
+        self._return_conn(conn)
         return {"deleted": deleted, "cutoff_days": max_age_days}
 
     def refresh_token(self, jti: str, ttl_seconds: int = 3600) -> dict:
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM tokens WHERE jti = ? AND is_revoked = 0", (jti,)).fetchone()
         if not row:
-            conn.close()
+            self._return_conn(conn)
             return {"refreshed": False, "error": "Token not found or revoked"}
         token = dict(row)
         new_expires = time.time() + ttl_seconds
@@ -362,7 +394,7 @@ class TokenManager:
             (new_expires, jti),
         )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
         return {"refreshed": True, "jti": jti, "new_expires_at": new_expires}
 
     def get_agent_tokens(self, agent_id: str, active_only: bool = True) -> list:
@@ -377,5 +409,126 @@ class TokenManager:
                 "SELECT * FROM tokens WHERE agent_id = ? ORDER BY issued_at DESC LIMIT 50",
                 (agent_id,),
             ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         return [dict(r) for r in rows]
+
+    def get_expiring_tokens(self, within_seconds: int = 300) -> list:
+        now = time.time()
+        cutoff = now + within_seconds
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM tokens WHERE is_revoked = 0 AND expires_at > ? AND expires_at <= ? ORDER BY expires_at ASC",
+            (now, cutoff),
+        ).fetchall()
+        self._return_conn(conn)
+        return [dict(r) for r in rows]
+
+    def rotate_token(self, jti: str, new_ttl_seconds: int = 3600) -> dict:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM tokens WHERE jti = ? AND is_revoked = 0", (jti,)).fetchone()
+        if not row:
+            self._return_conn(conn)
+            return {"rotated": False, "error": "Token not found or revoked"}
+        old_token = dict(row)
+        conn.execute("UPDATE tokens SET is_revoked = 1, revoked_at = ? WHERE jti = ?", (time.time(), jti))
+        conn.commit()
+        self._return_conn(conn)
+
+        new_result = self.issue_token(
+            agent_id=old_token["agent_id"],
+            agent_type=old_token["agent_type"],
+            capabilities=json.loads(old_token["capabilities"]),
+            max_capabilities=json.loads(old_token["max_capabilities"]),
+            scope=json.loads(old_token["scope"]),
+            max_scope=json.loads(old_token["max_scope"]),
+            delegated_user=old_token["delegated_user"],
+            parent_agent=old_token["parent_agent"],
+            parent_jti=old_token["parent_jti"],
+            trust_chain=json.loads(old_token["trust_chain"]),
+            attenuation_level=old_token["attenuation_level"],
+            ttl_seconds=new_ttl_seconds,
+            session_id=old_token["session_id"],
+            behavior_baseline_hash=old_token["behavior_baseline_hash"],
+            risk_score=old_token["risk_score_at_issuance"],
+            max_uses=old_token["max_uses"],
+            task_id=old_token["task_id"],
+        )
+        return {
+            "rotated": True,
+            "old_jti": jti,
+            "new_jti": new_result["jti"],
+            "new_access_token": new_result["access_token"],
+            "new_expires_in": new_result["expires_in"],
+        }
+
+    def get_token_analytics(self) -> dict:
+        now = time.time()
+        conn = self._get_conn()
+        total = conn.execute("SELECT COUNT(*) as cnt FROM tokens").fetchone()["cnt"]
+        active = conn.execute("SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ?", (now,)).fetchone()["cnt"]
+        revoked = conn.execute("SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 1").fetchone()["cnt"]
+        expired = conn.execute("SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at <= ?", (now,)).fetchone()["cnt"]
+        expiring_5m = conn.execute("SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ? AND expires_at <= ?", (now, now + 300)).fetchone()["cnt"]
+        expiring_1h = conn.execute("SELECT COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ? AND expires_at <= ?", (now, now + 3600)).fetchone()["cnt"]
+
+        avg_ttl = 0
+        row = conn.execute("SELECT AVG(expires_at - issued_at) as avg_ttl FROM tokens WHERE is_revoked = 0 AND expires_at > ?", (now,)).fetchone()
+        if row and row["avg_ttl"]:
+            avg_ttl = round(row["avg_ttl"], 1)
+
+        avg_uses = 0
+        row = conn.execute("SELECT AVG(use_count) as avg_uses FROM tokens WHERE is_revoked = 0 AND expires_at > ?", (now,)).fetchone()
+        if row and row["avg_uses"]:
+            avg_uses = round(row["avg_uses"], 2)
+
+        by_agent = conn.execute(
+            "SELECT agent_id, COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ? GROUP BY agent_id",
+            (now,),
+        ).fetchall()
+        self._return_conn(conn)
+
+        return {
+            "total": total,
+            "active": active,
+            "revoked": revoked,
+            "expired": expired,
+            "expiring_within_5min": expiring_5m,
+            "expiring_within_1h": expiring_1h,
+            "avg_ttl_seconds": avg_ttl,
+            "avg_use_count": avg_uses,
+            "by_agent": {r["agent_id"]: r["cnt"] for r in by_agent},
+        }
+
+    def bulk_revoke_by_capability(self, capability: str) -> dict:
+        conn = self._get_conn()
+        now = time.time()
+        rows = conn.execute(
+            "SELECT jti, capabilities FROM tokens WHERE is_revoked = 0"
+        ).fetchall()
+        to_revoke = []
+        for row in rows:
+            try:
+                caps = json.loads(row["capabilities"])
+                if capability in caps:
+                    to_revoke.append(row["jti"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        affected = 0
+        for jti in to_revoke:
+            cursor = conn.execute(
+                "UPDATE tokens SET is_revoked = 1, revoked_at = ? WHERE jti = ? AND is_revoked = 0",
+                (now, jti),
+            )
+            affected += cursor.rowcount
+        conn.commit()
+        self._return_conn(conn)
+        return {"revoked_count": affected, "capability": capability}
+
+    def get_delegation_depth_stats(self) -> dict:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT attenuation_level, COUNT(*) as cnt FROM tokens WHERE is_revoked = 0 AND expires_at > ? GROUP BY attenuation_level ORDER BY attenuation_level",
+            (time.time(),),
+        ).fetchall()
+        self._return_conn(conn)
+        return {r["attenuation_level"]: r["cnt"] for r in rows}

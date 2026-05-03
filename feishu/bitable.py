@@ -1,3 +1,5 @@
+import time
+import json
 from feishu.client import FeishuClient
 
 
@@ -24,6 +26,7 @@ class FeishuBitable(FeishuClient):
                 "base", "+record-list",
                 "--base-token", app_token,
                 "--table-id", table_id,
+                "--limit", str(page_size),
                 "--format", "json",
             ])
             if isinstance(result, dict) and "error" not in result:
@@ -62,7 +65,7 @@ class FeishuBitable(FeishuClient):
                 "mode": "demo",
                 "app_token": app_token,
                 "table_id": table_id,
-                "record_id": "rec_new_" + str(int(__import__("time").time())),
+                "record_id": "rec_new_" + str(int(time.time())),
                 "fields": fields,
                 "message": "多维表格写入成功(Demo模式)",
             }
@@ -74,7 +77,7 @@ class FeishuBitable(FeishuClient):
                 "--base-token", app_token,
                 "--table-id", table_id,
                 "--format", "json",
-                "--json", __import__("json").dumps({"fields": field_names, "rows": [row_values]}),
+                "--json", json.dumps({"fields": field_names, "rows": [row_values]}),
             ])
             if isinstance(result, dict) and "error" not in result:
                 record_ids = result.get("record_id_list", [])

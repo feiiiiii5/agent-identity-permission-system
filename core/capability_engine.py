@@ -52,13 +52,16 @@ class CapabilityEngine:
         agent_set = set(agent_capabilities)
         intent_set = set(intent_caps)
 
-        if intent_set:
-            intersection = user_set & agent_set & intent_set
-        else:
-            intersection = user_set & agent_set
+        base_granted = user_set & agent_set
 
-        granted = sorted(list(intersection))
-        denied = sorted(list((user_set | agent_set) - intersection))
+        if intent_set:
+            intent_granted = base_granted & intent_set
+            expanded = base_granted | (intent_set & agent_set)
+            granted = sorted(list(expanded))
+            denied = sorted(list((user_set | agent_set) - expanded))
+        else:
+            granted = sorted(list(base_granted))
+            denied = sorted(list((user_set | agent_set) - base_granted))
 
         return {
             "granted_capabilities": granted,
@@ -66,7 +69,7 @@ class CapabilityEngine:
             "user_permissions": sorted(list(user_set)),
             "agent_capabilities": sorted(list(agent_set)),
             "intent_inferred": sorted(list(intent_set)),
-            "intersection_method": "user ∩ agent ∩ intent" if intent_set else "user ∩ agent",
+            "intersection_method": "user ∩ agent ∪ (intent ∩ agent)" if intent_set else "user ∩ agent",
         }
 
     def check_delegation_permission(

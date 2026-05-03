@@ -1,17 +1,19 @@
 import json
-import sqlite3
+
+from core.db_pool import get_pool
 
 
 class PrivilegeDetector:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def detect_escalation(
         self,
@@ -90,7 +92,7 @@ class PrivilegeDetector:
             "SELECT baseline_capabilities FROM agents WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
 
         if not row:
             return {"is_escalation": False, "reason": "agent_not_found"}

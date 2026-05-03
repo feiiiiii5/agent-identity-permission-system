@@ -1,6 +1,6 @@
 import time
-import sqlite3
 from dataclasses import dataclass
+from core.db_pool import get_pool
 
 
 @dataclass
@@ -24,14 +24,15 @@ class SlidingWindowRateLimiter:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
         self._init_db()
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        if conn and self._pool:
+            self._pool.return_connection(conn)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -46,7 +47,7 @@ class SlidingWindowRateLimiter:
             CREATE INDEX IF NOT EXISTS idx_rl_timestamp ON rate_limit_events(timestamp);
         """)
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def check_rate_limit(self, agent_id: str, action_type: str) -> RateLimitResult:
         limit_cfg = self.LIMITS.get(action_type)
@@ -66,7 +67,7 @@ class SlidingWindowRateLimiter:
             "SELECT COUNT(*) as cnt FROM rate_limit_events WHERE agent_id = ? AND action_type = ? AND timestamp > ?",
             (agent_id, action_type, window_start),
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
 
         current_count = row["cnt"] if row else 0
 
@@ -96,7 +97,7 @@ class SlidingWindowRateLimiter:
             "SELECT MIN(timestamp) as oldest FROM rate_limit_events WHERE agent_id = ? AND action_type = ? AND timestamp > ?",
             (agent_id, action_type, window_start),
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
         return row["oldest"] if row and row["oldest"] else 0
 
     def record_request(self, agent_id: str, action_type: str):
@@ -115,7 +116,7 @@ class SlidingWindowRateLimiter:
             (cutoff,),
         )
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def get_agent_rate_stats(self, agent_id: str) -> dict:
         stats = {}
@@ -137,5 +138,5 @@ class SlidingWindowRateLimiter:
                 "remaining": max(0, cfg["max_requests"] - count),
             }
 
-        conn.close()
+        self._return_conn(conn)
         return stats

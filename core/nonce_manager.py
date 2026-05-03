@@ -1,7 +1,16 @@
+import json
 import time
 import uuid
+import logging
 import sqlite3
+import threading
+from typing import Optional
 from dataclasses import dataclass
+from collections import OrderedDict
+
+from core.db_pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,16 +37,27 @@ class NonceManager:
             return
         self._initialized = True
         self._issued_nonces = {}
-        self._used_nonces = set()
+        self._used_nonces = OrderedDict()
+        self.MAX_USED_NONCES = 10000
         self.nonce_ttl = 300
         self.db_path = db_path or ":memory:"
+        self._pool = get_pool(self.db_path) if self.db_path != ":memory:" else None
         self._init_db()
 
     def _get_conn(self):
+        if self._pool:
+            return self._pool.get_connection()
+        # Fallback for :memory: databases
+        import sqlite3
         conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _return_conn(self, conn):
+        if self._pool:
+            self._pool.return_connection(conn)
+        else:
+            conn.close()
 
     def _init_db(self):
         conn = self._get_conn()
@@ -51,7 +71,7 @@ class NonceManager:
             );
         """)
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def issue_nonce(self, agent_id: str) -> str:
         nonce = uuid.uuid4().hex + uuid.uuid4().hex
@@ -65,10 +85,10 @@ class NonceManager:
                 (nonce, agent_id, now),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to persist nonce: {e}")
         finally:
-            conn.close()
+            self._return_conn(conn)
 
         return nonce
 
@@ -82,13 +102,13 @@ class NonceManager:
                 "SELECT * FROM nonces WHERE nonce = ?",
                 (nonce,),
             ).fetchone()
-            conn.close()
+            self._return_conn(conn)
 
             if not row:
                 return NonceResult(valid=False, error_code="ERR_NONCE_NOT_FOUND")
 
             if row["consumed"]:
-                self._used_nonces.add(nonce)
+                self._used_nonces[nonce] = True
                 return NonceResult(valid=False, error_code="ERR_NONCE_ALREADY_USED")
 
             stored_agent = row["agent_id"]
@@ -104,7 +124,9 @@ class NonceManager:
         if time.time() - issued_at > self.nonce_ttl:
             return NonceResult(valid=False, error_code="ERR_NONCE_EXPIRED")
 
-        self._used_nonces.add(nonce)
+        self._used_nonces[nonce] = True
+        if len(self._used_nonces) > self.MAX_USED_NONCES:
+            self._used_nonces.popitem(last=False)
 
         conn = self._get_conn()
         try:
@@ -113,10 +135,10 @@ class NonceManager:
                 (time.time(), nonce),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to mark nonce consumed: {e}")
         finally:
-            conn.close()
+            self._return_conn(conn)
 
         return NonceResult(valid=True)
 
@@ -134,7 +156,7 @@ class NonceManager:
             cutoff = now - self.nonce_ttl * 2
             conn.execute("DELETE FROM nonces WHERE issued_at < ? AND consumed = 0", (cutoff,))
             conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Nonce cleanup failed: %s", e)
         finally:
-            conn.close()
+            self._return_conn(conn)

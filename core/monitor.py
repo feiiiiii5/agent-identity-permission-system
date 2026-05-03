@@ -1,7 +1,14 @@
 import time
 import json
 import sqlite3
+import threading
+import logging
 from typing import Optional
+from collections import OrderedDict
+
+from core.db_pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 class SystemMonitor:
@@ -18,17 +25,21 @@ class SystemMonitor:
         "approval_timeout_rate": {"warning": 0.3, "critical": 0.5},
     }
 
+    MAX_PERF_HISTORY = 1000
+
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._init_db()
+        self._pool = get_pool(db_path)
         self._start_time = time.time()
+        self._perf_history = OrderedDict()
+        self._optimization_log = []
+        self._init_db()
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -52,7 +63,7 @@ class SystemMonitor:
             );
         """)
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def get_system_health(self, auth_server) -> dict:
         now = time.time()
@@ -70,7 +81,7 @@ class SystemMonitor:
         recent_injections = conn.execute("SELECT COUNT(*) as cnt FROM audit_logs WHERE injection_detected = 1 AND timestamp > ?", (one_hour_ago,)).fetchone()["cnt"]
         recent_escalations = conn.execute("SELECT COUNT(*) as cnt FROM audit_logs WHERE privilege_escalation_detected = 1 AND timestamp > ?", (one_hour_ago,)).fetchone()["cnt"]
         total_audit = conn.execute("SELECT COUNT(*) as cnt FROM audit_logs").fetchone()["cnt"]
-        conn.close()
+        self._return_conn(conn)
 
         agent_health = []
         frozen_count = 0
@@ -193,9 +204,9 @@ class SystemMonitor:
                 (metric_name, severity, metric_name, value, threshold, f"{metric_name} = {value}", time.time()),
             )
             conn.commit()
-            conn.close()
-        except Exception:
-            pass
+            self._return_conn(conn)
+        except Exception as e:
+            logger.error("Failed to record alert: %s", e)
 
     def get_alert_history(self, limit: int = 50, severity: str = None) -> list:
         conn = self._get_conn()
@@ -209,7 +220,7 @@ class SystemMonitor:
                 "SELECT * FROM monitor_alerts ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        conn.close()
+        self._return_conn(conn)
         return [dict(r) for r in rows]
 
     def _format_uptime(self, seconds: float) -> str:
@@ -221,3 +232,113 @@ class SystemMonitor:
         if minutes > 0:
             return f"{minutes}m {secs}s"
         return f"{secs}s"
+
+    def record_performance(self, operation: str, duration_ms: float, metadata: dict = None):
+        entry = {
+            "operation": operation,
+            "duration_ms": duration_ms,
+            "timestamp": time.time(),
+            "metadata": metadata or {},
+        }
+        key = f"{operation}:{time.time()}"
+        self._perf_history[key] = entry
+        while len(self._perf_history) > self.MAX_PERF_HISTORY:
+            self._perf_history.popitem(last=False)
+
+    def get_performance_summary(self) -> dict:
+        if not self._perf_history:
+            return {"operations": {}, "total_samples": 0}
+        ops = {}
+        for entry in self._perf_history.values():
+            op = entry["operation"]
+            if op not in ops:
+                ops[op] = {"count": 0, "total_ms": 0, "min_ms": float("inf"), "max_ms": 0}
+            ops[op]["count"] += 1
+            ops[op]["total_ms"] += entry["duration_ms"]
+            ops[op]["min_ms"] = min(ops[op]["min_ms"], entry["duration_ms"])
+            ops[op]["max_ms"] = max(ops[op]["max_ms"], entry["duration_ms"])
+
+        for op in ops:
+            ops[op]["avg_ms"] = round(ops[op]["total_ms"] / ops[op]["count"], 2)
+            ops[op]["p95_ms"] = self._compute_percentile(op, 95)
+
+        return {"operations": ops, "total_samples": len(self._perf_history)}
+
+    def _compute_percentile(self, operation: str, percentile: float) -> float:
+        durations = sorted([
+            e["duration_ms"] for e in self._perf_history.values()
+            if e["operation"] == operation
+        ])
+        if not durations:
+            return 0
+        idx = int(len(durations) * percentile / 100)
+        idx = min(idx, len(durations) - 1)
+        return round(durations[idx], 2)
+
+    def run_self_assessment(self, auth_server) -> dict:
+        health = self.get_system_health(auth_server)
+        perf = self.get_performance_summary()
+
+        recommendations = []
+
+        if health["health_score"] < 80:
+            recommendations.append({
+                "area": "system_health",
+                "severity": "high" if health["health_score"] < 50 else "medium",
+                "message": f"系统健康分 {health['health_score']}/100，需要关注",
+                "action": "检查活跃告警并处理",
+            })
+
+        metrics = health.get("metrics", {})
+        if metrics.get("injection_attempts_1h", 0) > 3:
+            recommendations.append({
+                "area": "security",
+                "severity": "high",
+                "message": f"过去1小时注入尝试 {metrics['injection_attempts_1h']} 次",
+                "action": "审查注入来源，考虑加强输入过滤规则",
+            })
+
+        if metrics.get("deny_rate_1h", 0) > 20:
+            recommendations.append({
+                "area": "access_control",
+                "severity": "medium",
+                "message": f"拒绝率 {metrics['deny_rate_1h']:.1f}% 偏高",
+                "action": "审查权限策略是否过于严格或Agent行为异常",
+            })
+
+        for op, stats in perf.get("operations", {}).items():
+            if stats["avg_ms"] > 500:
+                recommendations.append({
+                    "area": "performance",
+                    "severity": "medium",
+                    "message": f"操作 {op} 平均耗时 {stats['avg_ms']}ms",
+                    "action": "考虑添加缓存或优化查询",
+                })
+
+        pool_stats = self._pool.stats()
+        if pool_stats.get("wait_count", 0) > 10:
+            recommendations.append({
+                "area": "resource",
+                "severity": "medium",
+                "message": f"连接池等待 {pool_stats['wait_count']} 次",
+                "action": "考虑增加连接池大小",
+            })
+
+        assessment = {
+            "timestamp": time.time(),
+            "health_score": health["health_score"],
+            "overall_status": health["overall_status"],
+            "performance_summary": perf,
+            "recommendations": recommendations,
+            "recommendation_count": len(recommendations),
+            "pool_stats": pool_stats,
+        }
+
+        self._optimization_log.append(assessment)
+        if len(self._optimization_log) > 100:
+            self._optimization_log = self._optimization_log[-50:]
+
+        return assessment
+
+    def get_optimization_history(self, limit: int = 10) -> list:
+        return self._optimization_log[-limit:]

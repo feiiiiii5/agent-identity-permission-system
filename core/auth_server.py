@@ -2,8 +2,12 @@ import json
 import time
 import uuid
 import hashlib
+import hmac
+import secrets
 import sqlite3
+import threading
 from typing import Optional
+from collections import OrderedDict
 from cryptography.hazmat.primitives.asymmetric import rsa, padding as asym_padding
 from cryptography.hazmat.primitives import hashes, serialization
 
@@ -22,6 +26,68 @@ from core.rate_limiter import SlidingWindowRateLimiter
 from core.circuit_breaker import CircuitBreaker
 from core.nonce_manager import NonceManager
 from core.incident_responder import IncidentResponder
+from core.alerting import AlertManager
+from core.db_pool import get_pool
+
+
+class RiskDecisionEngine:
+
+    RISK_ACTIONS = [
+        (90, 100, "freeze_and_revoke"),
+        (80, 90, "revoke_and_alert"),
+        (70, 80, "downgrade_readonly"),
+        (40, 70, "monitor_and_log"),
+        (0, 40, "allow"),
+    ]
+
+    def __init__(self, auth_server):
+        self._auth_server = auth_server
+
+    def evaluate_and_act(self, agent_id: str, risk_score: float, trace_id: str = "") -> dict:
+        action_name = "allow"
+        for low, high, action in self.RISK_ACTIONS:
+            if low <= risk_score < high:
+                action_name = action
+                break
+        if risk_score >= 100:
+            action_name = "freeze_and_revoke"
+
+        result = {"agent_id": agent_id, "risk_score": risk_score, "action": action_name, "trace_id": trace_id}
+
+        if action_name == "freeze_and_revoke":
+            self._auth_server.freeze_agent(agent_id)
+            revoked = self._auth_server.token_manager.revoke_all_agent_tokens(agent_id)
+            result["revoked_count"] = revoked.get("revoked_count", 0)
+            result["frozen"] = True
+            self._auth_server.audit_logger.write_log(
+                requesting_agent=agent_id, action_type="risk_decision_freeze",
+                decision="DENY", deny_reason=f"Risk score {risk_score} >= 90, agent frozen and tokens revoked",
+                risk_score=risk_score, trace_id=trace_id,
+            )
+        elif action_name == "revoke_and_alert":
+            revoked = self._auth_server.token_manager.revoke_all_agent_tokens(agent_id)
+            result["revoked_count"] = revoked.get("revoked_count", 0)
+            self._auth_server.audit_logger.write_log(
+                requesting_agent=agent_id, action_type="risk_decision_revoke",
+                decision="ALERT", deny_reason=f"Risk score {risk_score} >= 80, tokens revoked",
+                risk_score=risk_score, trace_id=trace_id,
+            )
+        elif action_name == "downgrade_readonly":
+            self._auth_server.audit_logger.write_log(
+                requesting_agent=agent_id, action_type="risk_decision_downgrade",
+                decision="ALERT", deny_reason=f"Risk score {risk_score} >= 70, downgraded to read-only",
+                risk_score=risk_score, trace_id=trace_id,
+            )
+        elif action_name == "monitor_and_log":
+            self._auth_server.audit_logger.write_log(
+                requesting_agent=agent_id, action_type="risk_decision_monitor",
+                decision="ALLOW", risk_score=risk_score, trace_id=trace_id,
+            )
+
+        if self._auth_server._ws_notify and action_name != "allow":
+            self._auth_server._notify("risk_decision", result)
+
+        return result
 
 
 class AuthServer:
@@ -31,8 +97,11 @@ class AuthServer:
     HUMAN_APPROVAL_TOKEN_TTL = 300
     HUMAN_APPROVAL_TIMEOUT = 30
 
+    MAX_PENDING_APPROVALS = 1000
+
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
         self._init_db()
 
         self.token_manager = TokenManager(db_path)
@@ -50,10 +119,13 @@ class AuthServer:
         self.circuit_breaker = CircuitBreaker()
         self.nonce_manager = NonceManager(db_path)
         self.incident_responder = IncidentResponder(db_path)
+        self.alert_manager = AlertManager(db_path)
+        self.risk_decision_engine = RiskDecisionEngine(self)
 
         self._ws_notify = None
         self._agent_key_pairs = {}
-        self._pending_approvals = {}
+        self._pending_approvals = OrderedDict()
+        self._approvals_lock = threading.Lock()
 
     def _init_db(self):
         conn = self._get_conn()
@@ -85,14 +157,13 @@ class AuthServer:
         except Exception:
             pass
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def set_ws_notify(self, func):
         self._ws_notify = func
@@ -101,12 +172,11 @@ class AuthServer:
         if self._ws_notify:
             try:
                 self._ws_notify(event_type, data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("WebSocket notification failed: %s", e)
 
     def _generate_secret(self, agent_id: str) -> str:
-        raw = f"{agent_id}:{time.time()}:{uuid.uuid4().hex}"
-        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+        return secrets.token_hex(32)
 
     def _generate_agent_keypair(self, agent_id: str) -> tuple:
         private_key = rsa.generate_private_key(
@@ -175,7 +245,7 @@ class AuthServer:
             agent = conn.execute(
                 "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
             ).fetchone()
-            conn.close()
+            self._return_conn(conn)
             return dict(agent)
         else:
             client_secret = self._generate_secret(agent_id)
@@ -192,7 +262,7 @@ class AuthServer:
                  json.dumps(capabilities), svid.spiffe_id, svid.expires_at, now),
             )
             conn.commit()
-            conn.close()
+            self._return_conn(conn)
 
             self.audit_logger.write_log(
                 requesting_agent=agent_id,
@@ -217,14 +287,7 @@ class AuthServer:
                 "svid_expires_at": svid.expires_at,
             }
 
-    def _get_agent(self, agent_id: str) -> Optional[dict]:
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
-        ).fetchone()
-        conn.close()
-        if not row:
-            return None
+    def _deserialize_agent(self, row: dict) -> dict:
         agent = dict(row)
         for field in ["capabilities", "authentication_schemes", "skill_descriptions", "baseline_capabilities"]:
             try:
@@ -233,20 +296,21 @@ class AuthServer:
                 agent[field] = []
         return agent
 
+    def _get_agent(self, agent_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        self._return_conn(conn)
+        if not row:
+            return None
+        return self._deserialize_agent(row)
+
     def list_agents(self) -> list:
         conn = self._get_conn()
         rows = conn.execute("SELECT * FROM agents ORDER BY created_at ASC").fetchall()
-        conn.close()
-        results = []
-        for row in rows:
-            agent = dict(row)
-            for field in ["capabilities", "authentication_schemes", "skill_descriptions", "baseline_capabilities"]:
-                try:
-                    agent[field] = json.loads(agent[field])
-                except (json.JSONDecodeError, TypeError):
-                    agent[field] = []
-            results.append(agent)
-        return results
+        self._return_conn(conn)
+        return [self._deserialize_agent(row) for row in rows]
 
     def generate_agent_card(self, agent_id: str) -> Optional[dict]:
         agent = self._get_agent(agent_id)
@@ -354,7 +418,7 @@ class AuthServer:
         if not agent:
             raise ValueError(f"Agent {agent_id} not registered")
 
-        if agent["client_secret"] != client_secret:
+        if not hmac.compare_digest(agent["client_secret"], client_secret):
             self.audit_logger.write_log(
                 requesting_agent=agent_id,
                 action_type="token_issue",
@@ -459,7 +523,7 @@ class AuthServer:
             "agent_capabilities": registered_caps,
             "circuit_breaker_open": not self.circuit_breaker.can_proceed(agent_id)["allowed"],
         }
-        for cap in granted_caps:
+        for cap in list(granted_caps):
             policy_decision = self.policy_engine.evaluate(
                 subject_id=agent_id,
                 action=cap,
@@ -467,7 +531,7 @@ class AuthServer:
                 context=policy_context,
             )
             if not policy_decision.allowed:
-                granted_caps = [c for c in granted_caps if c != cap]
+                granted_caps.remove(cap)
                 denied_caps.append(cap)
                 self.audit_logger.write_policy_decision(
                     subject_id=agent_id,
@@ -787,16 +851,19 @@ class AuthServer:
         human_approval_required = is_sensitive
 
         if human_approval_required:
-            task_id_val = task_id or f"human_approval_{int(time.time())}"
-            self._pending_approvals[task_id_val] = {
-                "task_id": task_id_val,
-                "requesting_agent": parent_agent_id,
-                "target_agent": target_agent_id,
-                "requested_capability": ",".join(delegated_caps),
-                "session_id": session_id,
-                "created_at": time.time(),
-                "status": "PENDING_HUMAN_APPROVAL",
-            }
+            with self._approvals_lock:
+                while len(self._pending_approvals) >= self.MAX_PENDING_APPROVALS:
+                    self._pending_approvals.popitem(last=False)
+                task_id_val = task_id or f"human_approval_{int(time.time())}"
+                self._pending_approvals[task_id_val] = {
+                    "task_id": task_id_val,
+                    "requesting_agent": parent_agent_id,
+                    "target_agent": target_agent_id,
+                    "requested_capability": ",".join(delegated_caps),
+                    "session_id": session_id,
+                    "created_at": time.time(),
+                    "status": "PENDING_HUMAN_APPROVAL",
+                }
             self.audit_logger.write_log(
                 requesting_agent=parent_agent_id,
                 action_type="human_approval_required",
@@ -884,7 +951,7 @@ class AuthServer:
         verifier = self._get_agent(verifier_agent_id)
         if not verifier:
             raise ValueError(f"Verifier agent {verifier_agent_id} not registered")
-        if verifier["client_secret"] != verifier_secret:
+        if not hmac.compare_digest(verifier["client_secret"], verifier_secret):
             raise PermissionError("Invalid verifier secret [ERR_AUTH_FAILED]")
 
         verify_result = self.token_manager.verify_token(token)
@@ -1048,17 +1115,20 @@ class AuthServer:
             "risk_score": payload.get("risk_score_at_issuance", 0),
         }
 
-    def revoke_token(self, jti: str = None, token: str = None) -> dict:
-        result = self.token_manager.revoke_token(jti=jti, token_str=token)
+    def revoke_token(self, jti: str = None, token: str = None, cascade: bool = True) -> dict:
+        result = self.token_manager.revoke_token(jti=jti, token_str=token, cascade=cascade)
 
         if result.get("revoked"):
+            cascade_info = ""
+            if result.get("cascade_count", 0) > 0:
+                cascade_info = f" (cascade: {result['cascade_count']} child tokens)"
             self.audit_logger.write_log(
                 requesting_agent="system",
                 action_type="token_revoke",
                 decision="ALLOW",
-                deny_reason="Token revoked",
+                deny_reason=f"Token revoked{cascade_info}",
             )
-            self._notify("token_revoked", {"jti": result.get("jti")})
+            self._notify("token_revoked", {"jti": result.get("jti"), "cascade_count": result.get("cascade_count", 0)})
 
         return result
 
@@ -1069,7 +1139,7 @@ class AuthServer:
         edges_rows = conn.execute(
             "SELECT source, target, success_count, deny_count, last_decision FROM delegation_edges ORDER BY last_timestamp DESC"
         ).fetchall()
-        conn.close()
+        self._return_conn(conn)
 
         nodes = []
         for a in agents:
@@ -1093,62 +1163,65 @@ class AuthServer:
         return {"nodes": nodes, "edges": edges}
 
     def resolve_approval(self, task_id: str, approved: bool) -> dict:
-        if task_id in self._pending_approvals:
-            approval = self._pending_approvals[task_id]
-            if approved:
-                approval["status"] = "approved"
-                self.audit_logger.write_log(
-                    requesting_agent=approval["requesting_agent"],
-                    action_type="human_approval_result",
-                    decision="ALLOW",
-                    target_agent=approval["target_agent"],
-                    human_approval_required=True,
-                    human_approval_result="APPROVED",
-                )
-            else:
-                approval["status"] = "rejected"
-                session_id = approval.get("session_id", "")
-                if session_id:
-                    token_record = self.token_manager.get_token_by_session(session_id)
-                    if token_record:
-                        self.token_manager.revoke_token(jti=token_record["jti"])
-                self.audit_logger.write_log(
-                    requesting_agent=approval["requesting_agent"],
-                    action_type="human_approval_result",
-                    decision="DENY",
-                    deny_reason="Human approval rejected",
-                    error_code="ERR_HUMAN_REJECTED",
-                    human_approval_required=True,
-                    human_approval_result="REJECTED",
-                )
-            del self._pending_approvals[task_id]
-            self._notify("human_approval_result", {"task_id": task_id, "approved": approved})
-            return {"task_id": task_id, "status": approval["status"]}
+        with self._approvals_lock:
+            if task_id in self._pending_approvals:
+                approval = self._pending_approvals[task_id]
+                if approved:
+                    approval["status"] = "approved"
+                    self.audit_logger.write_log(
+                        requesting_agent=approval["requesting_agent"],
+                        action_type="human_approval_result",
+                        decision="ALLOW",
+                        target_agent=approval["target_agent"],
+                        human_approval_required=True,
+                        human_approval_result="APPROVED",
+                    )
+                else:
+                    approval["status"] = "rejected"
+                    session_id = approval.get("session_id", "")
+                    if session_id:
+                        token_record = self.token_manager.get_token_by_session(session_id)
+                        if token_record:
+                            self.token_manager.revoke_token(jti=token_record["jti"])
+                    self.audit_logger.write_log(
+                        requesting_agent=approval["requesting_agent"],
+                        action_type="human_approval_result",
+                        decision="DENY",
+                        deny_reason="Human approval rejected",
+                        error_code="ERR_HUMAN_REJECTED",
+                        human_approval_required=True,
+                        human_approval_result="REJECTED",
+                    )
+                del self._pending_approvals[task_id]
+                self._notify("human_approval_result", {"task_id": task_id, "approved": approved})
+                return {"task_id": task_id, "status": approval["status"]}
 
         return {"task_id": task_id, "status": "not_found"}
 
     def check_approval_timeouts(self) -> list:
         now = time.time()
         timed_out = []
-        for task_id, approval in list(self._pending_approvals.items()):
-            if now - approval["created_at"] > self.HUMAN_APPROVAL_TIMEOUT:
-                approval["status"] = "timeout_rejected"
-                self.audit_logger.write_log(
-                    requesting_agent=approval["requesting_agent"],
-                    action_type="human_approval_timeout",
-                    decision="DENY",
-                    deny_reason=f"Human approval timed out after {self.HUMAN_APPROVAL_TIMEOUT}s",
-                    error_code="ERR_TIMEOUT_REJECTION",
-                    human_approval_required=True,
-                    human_approval_result="TIMEOUT_REJECTION",
-                )
-                timed_out.append(task_id)
-                del self._pending_approvals[task_id]
-                self._notify("human_approval_result", {"task_id": task_id, "approved": False, "timeout": True})
+        with self._approvals_lock:
+            for task_id, approval in list(self._pending_approvals.items()):
+                if now - approval["created_at"] > self.HUMAN_APPROVAL_TIMEOUT:
+                    approval["status"] = "timeout_rejected"
+                    self.audit_logger.write_log(
+                        requesting_agent=approval["requesting_agent"],
+                        action_type="human_approval_timeout",
+                        decision="DENY",
+                        deny_reason=f"Human approval timed out after {self.HUMAN_APPROVAL_TIMEOUT}s",
+                        error_code="ERR_TIMEOUT_REJECTION",
+                        human_approval_required=True,
+                        human_approval_result="TIMEOUT_REJECTION",
+                    )
+                    timed_out.append(task_id)
+                    del self._pending_approvals[task_id]
+                    self._notify("human_approval_result", {"task_id": task_id, "approved": False, "timeout": True})
         return timed_out
 
     def get_pending_approvals(self) -> list:
-        return list(self._pending_approvals.values())
+        with self._approvals_lock:
+            return list(self._pending_approvals.values())
 
     def get_svid(self, agent_id: str) -> dict:
         svid = self.svid_manager.get_svid(agent_id)
@@ -1249,3 +1322,40 @@ class AuthServer:
         token_cleanup = self.token_manager.cleanup_expired()
         nonce_cleanup = self.nonce_manager.cleanup_expired()
         return {"tokens": token_cleanup, "nonces": nonce_cleanup}
+
+    def freeze_agent(self, agent_id: str) -> dict:
+        conn = self._get_conn()
+        agent = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        if not agent:
+            self._return_conn(conn)
+            return {"error": f"Agent {agent_id} not found", "frozen": False}
+        conn.execute("UPDATE agents SET status = 'frozen' WHERE agent_id = ?", (agent_id,))
+        conn.commit()
+        self._return_conn(conn)
+        revoked = self.token_manager.revoke_all_agent_tokens(agent_id)
+        self.audit_logger.write_log(
+            requesting_agent=agent_id, action_type="agent_frozen",
+            decision="DENY", deny_reason="Agent manually frozen",
+            trace_id=uuid.uuid4().hex[:16],
+        )
+        self._notify("agent_frozen", {"agent_id": agent_id, "revoked_count": revoked.get("revoked_count", 0)})
+        return {"agent_id": agent_id, "status": "frozen", "revoked_tokens": revoked.get("revoked_count", 0)}
+
+    def unfreeze_agent(self, agent_id: str) -> dict:
+        conn = self._get_conn()
+        agent = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        if not agent:
+            self._return_conn(conn)
+            return {"error": f"Agent {agent_id} not found", "unfrozen": False}
+        conn.execute("UPDATE agents SET status = 'active' WHERE agent_id = ?", (agent_id,))
+        conn.commit()
+        self._return_conn(conn)
+        self.audit_logger.write_log(
+            requesting_agent=agent_id, action_type="agent_unfrozen",
+            decision="ALLOW", trace_id=uuid.uuid4().hex[:16],
+        )
+        self._notify("agent_unfrozen", {"agent_id": agent_id})
+        return {"agent_id": agent_id, "status": "active"}
+
+    def get_risk_trend(self, agent_id: str, window_minutes: int = 60) -> list:
+        return self.audit_logger.get_risk_trend(agent_id, window_minutes)

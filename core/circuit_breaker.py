@@ -1,6 +1,9 @@
 import time
+import logging
 import threading
 from typing import Dict
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitBreaker:
@@ -24,8 +27,8 @@ class CircuitBreaker:
         if self._ws_notify:
             try:
                 self._ws_notify(event_type, data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("WebSocket notification failed: %s", e)
 
     def _get_state(self, agent_id: str) -> dict:
         if agent_id not in self._states:

@@ -22,7 +22,19 @@ class FeishuClient:
                     ["lark-cli", "config", "show"],
                     capture_output=True, text=True, timeout=5,
                 )
-                config = json.loads(result.stdout)
+                config = {}
+                stdout = result.stdout.strip()
+                try:
+                    config = json.loads(stdout)
+                except json.JSONDecodeError:
+                    for line in stdout.split("\n"):
+                        s = line.strip()
+                        if s.startswith("{"):
+                            try:
+                                config = json.loads(s)
+                                break
+                            except json.JSONDecodeError:
+                                continue
                 if config.get("appId"):
                     self._cli_configured = True
                     self.app_id = config["appId"]
@@ -55,16 +67,20 @@ class FeishuClient:
                 if line_stripped.startswith("{") or line_stripped.startswith("["):
                     output = "\n".join(output.split("\n")[line_idx:])
                     break
-            data = json.loads(output)
+            try:
+                data = json.loads(output)
+            except json.JSONDecodeError:
+                return {"raw_text": output, "mode": "cli_text"}
             if isinstance(data, dict) and data.get("ok"):
                 return data.get("data", data)
             if isinstance(data, dict) and "error" in data:
-                return {"error": data.get("error", {}).get("message", "CLI call failed"), "mode": "cli_error"}
+                err = data.get("error")
+                if isinstance(err, dict):
+                    return {"error": err.get("message", "CLI call failed"), "mode": "cli_error"}
+                return {"error": str(err), "mode": "cli_error"}
             return data
         except subprocess.TimeoutExpired:
             return {"error": "CLI call timed out", "mode": "cli_error"}
-        except json.JSONDecodeError as e:
-            return {"error": f"JSON parse error: {e}", "mode": "cli_error", "raw": result.stdout[:200] if result else ""}
         except Exception as e:
             return {"error": str(e), "mode": "cli_error"}
 
@@ -81,8 +97,46 @@ class FeishuClient:
                     ["lark-cli", "auth", "status"],
                     capture_output=True, text=True, timeout=5,
                 )
-                status = json.loads(result.stdout)
-                if status.get("tokenStatus") == "valid":
+                status = {}
+                try:
+                    status = json.loads(result.stdout.strip())
+                except json.JSONDecodeError:
+                    for line in result.stdout.strip().split("\n"):
+                        s = line.strip()
+                        if s.startswith("{"):
+                            try:
+                                status = json.loads(s)
+                                break
+                            except json.JSONDecodeError:
+                                continue
+                if status.get("tokenStatus") == "valid" or status.get("ok"):
+                    try:
+                        token_result = subprocess.run(
+                            ["lark-cli", "api", "POST",
+                             "/open-apis/auth/v3/tenant_access_token/internal",
+                             "--data", json.dumps({"app_id": self.app_id, "app_secret": self.app_secret}),
+                             "--as", "bot"],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        token_data = {}
+                        try:
+                            token_data = json.loads(token_result.stdout.strip())
+                        except json.JSONDecodeError:
+                            for line in token_result.stdout.strip().split("\n"):
+                                s = line.strip()
+                                if s.startswith("{"):
+                                    try:
+                                        token_data = json.loads(s)
+                                        break
+                                    except json.JSONDecodeError:
+                                        continue
+                        real_token = token_data.get("tenant_access_token", "")
+                        if real_token:
+                            self._token = real_token
+                            self._token_expires = time.time() + token_data.get("expire", 7200) - 60
+                            return self._token
+                    except Exception:
+                        pass
                     self._token = "cli_managed"
                     self._token_expires = time.time() + 3600
                     return self._token
@@ -130,10 +184,18 @@ class FeishuClient:
         for attempt in range(self.MAX_RETRIES):
             try:
                 token = self._get_access_token()
+                if token in ("demo_token_fallback",) or token.startswith("demo_token_"):
+                    return {"error": "No valid access token for API call", "mode": "api_error"}
                 headers = kwargs.pop("headers", {})
                 headers["Authorization"] = f"Bearer {token}"
                 resp = httpx.request(method, url, headers=headers, **kwargs)
-                return resp.json()
+                data = resp.json()
+                if isinstance(data, dict) and data.get("code") == 99991663:
+                    self._token = None
+                    self._token_expires = 0
+                    if attempt < self.MAX_RETRIES - 1:
+                        continue
+                return data
             except Exception:
                 if attempt == self.MAX_RETRIES - 1:
                     return {"error": f"Request failed after {self.MAX_RETRIES} retries", "mode": "api_error"}

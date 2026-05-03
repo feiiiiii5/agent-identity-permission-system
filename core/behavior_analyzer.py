@@ -5,6 +5,8 @@ import hashlib
 import sqlite3
 from typing import Optional
 
+from core.db_pool import get_pool
+
 
 class BehaviorAnalyzer:
 
@@ -15,13 +17,14 @@ class BehaviorAnalyzer:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
         self._init_db()
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -71,7 +74,7 @@ class BehaviorAnalyzer:
         except Exception:
             pass
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
     def record_observation(
         self,
@@ -111,7 +114,7 @@ class BehaviorAnalyzer:
                     self._update_baseline(conn, agent_id)
 
         conn.commit()
-        conn.close()
+        self._return_conn(conn)
 
         return {"recorded": True, "agent_id": agent_id, "observation_count": obs_count}
 
@@ -208,7 +211,7 @@ class BehaviorAnalyzer:
         ).fetchone()
 
         if not baseline_row:
-            conn.close()
+            self._return_conn(conn)
             return {"has_baseline": False, "is_anomaly": False, "anomaly_level": "none"}
 
         baseline = dict(baseline_row)
@@ -226,7 +229,7 @@ class BehaviorAnalyzer:
         if len(recent) >= 2:
             current_interval = recent[0]["timestamp"] - recent[1]["timestamp"]
 
-        conn.close()
+        self._return_conn(conn)
 
         anomalies = []
 
@@ -296,7 +299,7 @@ class BehaviorAnalyzer:
         row = conn.execute(
             "SELECT * FROM behavior_baselines WHERE agent_id = ?", (agent_id,)
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
 
         if not row:
             return {"has_baseline": False}

@@ -1,7 +1,10 @@
 import re
 import hashlib
 import base64
+import logging
 import urllib.parse
+
+logger = logging.getLogger(__name__)
 
 
 class InjectionScanner:
@@ -9,7 +12,7 @@ class InjectionScanner:
     ERROR_CODE = "PROMPT_INJECTION_BLOCKED"
 
     SYSTEM_OVERRIDE_PATTERNS = [
-        r"ignore\s+(previous|all|above|prior)\s+(instructions?|prompts?|rules?)",
+        r"ignore\s+(previous|all|above|prior)(\s+\w+)?\s+(instructions?|prompts?|rules?)",
         r"forget\s+(everything|all|previous|prior|above)",
         r"disregard\s+(all|previous|above|prior)\s+(instructions?|rules?|guidelines?)",
         r"you\s+are\s+now\s+",
@@ -199,17 +202,17 @@ class InjectionScanner:
             url_decoded = urllib.parse.unquote(text)
             if url_decoded != text:
                 variants.append(url_decoded)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("URL decode variant failed: %s", e)
         try:
             if re.match(r'^[A-Za-z0-9+/=]+$', text[:100]):
                 decoded = base64.b64decode(text[:200]).decode("utf-8", errors="ignore")
                 if decoded and decoded != text:
                     variants.append(decoded)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Base64 decode variant failed: %s", e)
         for variant in variants:
-            for pattern in self.SYSTEM_OVERRIDE_PATTERNS[:5]:
+            for pattern in self.SYSTEM_OVERRIDE_PATTERNS:
                 match = re.search(pattern, variant, re.IGNORECASE)
                 if match:
                     threats.append({
@@ -220,6 +223,18 @@ class InjectionScanner:
                         "severity": "critical",
                     })
                     break
+            if not threats:
+                for pattern in self.PRIVILEGE_DECLARATION_PATTERNS:
+                    match = re.search(pattern, variant, re.IGNORECASE)
+                    if match:
+                        threats.append({
+                            "type": "privilege_escalation",
+                            "pattern": f"decoded:{pattern}",
+                            "matched_text": match.group(),
+                            "layer": "encoding_detection",
+                            "severity": "critical",
+                        })
+                        break
             if threats:
                 break
         return threats

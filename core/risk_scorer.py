@@ -1,7 +1,12 @@
 import json
 import math
 import time
+import logging
 import sqlite3
+
+from core.db_pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 class RiskScorer:
@@ -51,7 +56,22 @@ class RiskScorer:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._pool = get_pool(db_path)
         self._weights = dict(self.DEFAULT_WEIGHTS)
+        self._behavior_analyzer = None
+        self._injection_scanner = None
+
+    def _get_behavior_analyzer(self):
+        if self._behavior_analyzer is None:
+            from core.behavior_analyzer import BehaviorAnalyzer
+            self._behavior_analyzer = BehaviorAnalyzer(self.db_path)
+        return self._behavior_analyzer
+
+    def _get_injection_scanner(self):
+        if self._injection_scanner is None:
+            from core.injection_scanner import InjectionScanner
+            self._injection_scanner = InjectionScanner()
+        return self._injection_scanner
 
     def set_weights(self, weights: dict):
         for k, v in weights.items():
@@ -63,10 +83,10 @@ class RiskScorer:
                 self._weights[k] /= total
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self._pool.get_connection()
+
+    def _return_conn(self, conn):
+        self._pool.return_connection(conn)
 
     def _compute_freq_risk(self, agent_id: str, conn) -> float:
         now = time.time()
@@ -129,18 +149,20 @@ class RiskScorer:
 
     def _compute_behavior_risk(self, agent_id: str, capabilities: list, delegation_depth: int) -> float:
         try:
-            from core.behavior_analyzer import BehaviorAnalyzer
-            ba = BehaviorAnalyzer(self.db_path)
+            ba = self._get_behavior_analyzer()
             anomaly = ba.check_anomaly(agent_id, capabilities, delegation_depth)
             if anomaly.get("is_anomaly"):
                 if anomaly.get("anomaly_level") == "critical":
                     return 0.9
                 return 0.6
-        except Exception:
+        except Exception as e:
+            logger.warning("Behavior anomaly check failed: %s", e)
             pass
         return 0.0
 
-    def compute_risk_score(self, agent_id: str, capabilities: list, delegation_depth: int = 0) -> dict:
+    def compute_risk_score(self, agent_id: str, capabilities: list, delegation_depth: int = 0,
+                           user_input: str = "", conversation_history: list = None,
+                           time_since_last_action: float = None) -> dict:
         conn = self._get_conn()
 
         agent_row = conn.execute(
@@ -155,7 +177,17 @@ class RiskScorer:
         history_risk = self._compute_history_risk(agent_id, conn)
         behavior_risk = self._compute_behavior_risk(agent_id, capabilities, delegation_depth)
 
-        conn.close()
+        self._return_conn(conn)
+
+        progressive_bonus = self._detect_progressive_attack(agent_id, conversation_history)
+
+        rapid_action_bonus = 0.0
+        if time_since_last_action is not None and time_since_last_action < 1.0:
+            rapid_action_bonus = 0.15
+
+        input_risk_bonus = 0.0
+        if user_input:
+            input_risk_bonus = self._compute_input_risk_bonus(user_input)
 
         risk_score = (
             freq_risk * self._weights["request_frequency"]
@@ -165,6 +197,8 @@ class RiskScorer:
             + history_risk * self._weights["history_violations"]
             + behavior_risk * self._weights["behavior_anomaly"]
         ) * 100
+
+        risk_score += progressive_bonus + rapid_action_bonus * 100 + input_risk_bonus * 100
 
         trust_modifier = max(0, (100 - trust_score) / 200)
         risk_score = risk_score * (1 + trust_modifier)
@@ -200,7 +234,40 @@ class RiskScorer:
                 "revoke": self.RISK_THRESHOLD_REVOKE,
             },
             "weights": self._weights,
+            "progressive_attack_bonus": progressive_bonus,
+            "rapid_action_bonus": rapid_action_bonus * 100,
+            "input_risk_bonus": input_risk_bonus * 100,
         }
+
+    def _detect_progressive_attack(self, agent_id: str, conversation_history: list = None, conn=None) -> float:
+        if not conversation_history or len(conversation_history) < 3:
+            return 0.0
+        injection_count = 0
+        scanner = self._get_injection_scanner()
+        for msg in conversation_history[-3:]:
+            if isinstance(msg, dict) and msg.get("injection_detected"):
+                injection_count += 1
+            elif isinstance(msg, str):
+                try:
+                    result = scanner.scan(msg)
+                    if result.get("is_injection"):
+                        injection_count += 1
+                except Exception as e:
+                    logger.debug("Injection scan in risk scoring failed: %s", e)
+        if injection_count >= 2:
+            return 30.0
+        return 0.0
+
+    def _compute_input_risk_bonus(self, user_input: str) -> float:
+        bonus = 0.0
+        high_risk_keywords = ["删除", "drop", "admin", "root", "管理员", "绕过", "bypass", "忽略指令"]
+        lower = user_input.lower()
+        for kw in high_risk_keywords:
+            if kw in lower:
+                bonus += 0.05
+        if len(user_input) > 500:
+            bonus += 0.08
+        return min(bonus, 0.3)
 
     def update_trust_score(self, agent_id: str, delta: float) -> float:
         conn = self._get_conn()
@@ -212,5 +279,5 @@ class RiskScorer:
         row = conn.execute(
             "SELECT trust_score FROM agents WHERE agent_id = ?", (agent_id,)
         ).fetchone()
-        conn.close()
+        self._return_conn(conn)
         return row["trust_score"] if row else 0.0

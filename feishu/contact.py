@@ -17,9 +17,9 @@ class FeishuContact(FeishuClient):
                 },
             }
         if self._cli_configured:
-            args = ["contact", "+user-list", "--format", "json"]
+            args = ["contact", "+search-user", "--format", "json"]
             if user_id:
-                args.extend(["--user-id", user_id])
+                args.extend(["--user-ids", user_id])
             result = self._cli_call(args)
             if isinstance(result, dict) and "error" not in result:
                 items = result.get("users", result.get("items", []))
@@ -51,5 +51,5 @@ class FeishuContact(FeishuClient):
         return self._request_with_retry(
             "GET",
             "https://open.feishu.cn/open-apis/contact/v3/users",
-            params={"page_size": page_size},
+            params={"page_size": page_size, "user_id": user_id} if user_id else {"page_size": page_size},
         )
